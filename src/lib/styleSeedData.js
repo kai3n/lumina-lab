@@ -9,6 +9,14 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/BE1D5320_white_Round_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D5320_EM_200ct_white_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D5320_EM_200ct_white_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -57,6 +65,70 @@ export const styleSeedData = [
     }
   },
   {
+    "id": "RING-026",
+    "category": "ring",
+    "subcategory": "engagementRing",
+    "coverImage": "/assets/designs/BE1D322_yellow_Emerald_top_2_carat.jpg",
+    "media": [
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D322_yellow_Emerald_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D322_EM_200ct_yellow_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D322_EM_200ct_yellow_side2.jpg"
+      }
+    ],
+    "mediaComplete": true,
+    "metalOptions": [
+      "18kw",
+      "18ky",
+      "18kr",
+      "pt"
+    ],
+    "estWeightG": 4.2,
+    "laborUsd": 95,
+    "leadDays": 12,
+    "availableForSale": true,
+    "published": true,
+    "supplierEvidence": "https://www.brilliantearth.com/Adorned-Opera-Three-Stone-Diamond-Ring-(1/2-ct.-tw.)-Gold-BE1D322-12694822/",
+    "firstQuoteAt": "2026-06-27",
+    "name": {
+      "en": "Classic Four-Prong Hidden Halo Three Stone",
+      "ko": "클래식 4프롱 히든 헤일로 쓰리 스톤",
+      "zh": "经典 四爪 隐藏光环 三石",
+      "es": "clásico cuatro garras halo oculto tres piedras"
+    },
+    "detailLabel": {
+      "en": "Custom starter design",
+      "ko": "맞춤 시작 디자인",
+      "zh": "定制起点设计",
+      "es": "Diseño inicial personalizado"
+    },
+    "description": {
+      "en": "This is a sample starting point, not a limit. Share references and we can adjust shape, scale, stones, metal, and finish after review.",
+      "ko": "이 디자인은 제한이 아니라 시작점입니다. 원하는 레퍼런스를 보내주시면 형태, 크기, 스톤, 메탈, 마감을 검토 후 조정할 수 있습니다.",
+      "zh": "这是起点样例，不是限制。上传参考后，我们可评估并调整造型、尺寸、宝石、金属与细节。",
+      "es": "Este diseño es un punto de partida, no un límite. Comparte referencias y ajustamos forma, escala, piedras, metal y acabado tras revisar."
+    },
+    "flexibleText": {
+      "en": "Shape, stone, metal, scale",
+      "ko": "형태, 스톤, 메탈, 크기",
+      "zh": "造型、宝石、金属、比例",
+      "es": "Forma, piedra, metal, escala"
+    },
+    "beforeProductionText": {
+      "en": "Quote and CAD approval",
+      "ko": "견적 및 CAD 승인",
+      "zh": "报价与 CAD 确认",
+      "es": "Cotización y aprobación CAD"
+    }
+  },
+  {
     "id": "RING-002",
     "category": "ring",
     "subcategory": "engagementRing",
@@ -65,6 +137,14 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/BE121H6_white_Round_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE121H6_RD_200ct_white_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE121H6_RD_200ct_white_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -121,6 +201,14 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/BE1D879_white_Emerald_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D879_EM_200ct_white_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D879_EM_200ct_white_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -233,6 +321,14 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/BE1761_white_Round_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1761_RD_200ct_white_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1761_RD_200ct_white_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -289,6 +385,14 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/BE1761_white_Marquise_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1761_MQ_200ct_white_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1761_MQ_200ct_white_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -340,11 +444,19 @@ export const styleSeedData = [
     "id": "RING-007",
     "category": "ring",
     "subcategory": "engagementRing",
-    "coverImage": "/assets/designs/BE17652_RD_200ct_white_side1.jpg",
+    "coverImage": "/assets/designs/BE17652_white_Round_top_2_carat.jpg",
     "media": [
       {
         "kind": "image",
+        "src": "/assets/designs/BE17652_white_Round_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
         "src": "/assets/designs/BE17652_RD_200ct_white_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE17652_RD_200ct_white_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -396,11 +508,19 @@ export const styleSeedData = [
     "id": "RING-008",
     "category": "ring",
     "subcategory": "engagementRing",
-    "coverImage": "/assets/designs/BE1D17653_RD_200ct_white_side1.jpg",
+    "coverImage": "/assets/designs/BE1D17653_yellow_Princess_top_2_carat.jpg",
     "media": [
       {
         "kind": "image",
-        "src": "/assets/designs/BE1D17653_RD_200ct_white_side1.jpg"
+        "src": "/assets/designs/BE1D17653_yellow_Princess_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D17653_PR_200ct_yellow_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D17653_PR_200ct_yellow_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -452,11 +572,19 @@ export const styleSeedData = [
     "id": "RING-009",
     "category": "ring",
     "subcategory": "engagementRing",
-    "coverImage": "/assets/designs/BE1D9876_white_Round_top_2_carat.jpg",
+    "coverImage": "/assets/designs/BE1D9876_yellow_Pear_top_2_carat.jpg",
     "media": [
       {
         "kind": "image",
-        "src": "/assets/designs/BE1D9876_white_Round_top_2_carat.jpg"
+        "src": "/assets/designs/BE1D9876_yellow_Pear_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D9876_PE_200ct_yellow_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D9876_PE_200ct_yellow_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -513,6 +641,14 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/BE1PD25R25_white_Round_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1PD25R25_RD_200ct_white_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1PD25R25_RD_200ct_white_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -564,11 +700,19 @@ export const styleSeedData = [
     "id": "RING-011",
     "category": "ring",
     "subcategory": "engagementRing",
-    "coverImage": "/assets/designs/BE1D166_white_Round_top_2_carat.jpg",
+    "coverImage": "/assets/designs/BE1D166_yellow_Round_top_2_carat.jpg",
     "media": [
       {
         "kind": "image",
-        "src": "/assets/designs/BE1D166_white_Round_top_2_carat.jpg"
+        "src": "/assets/designs/BE1D166_yellow_Round_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D166_RD_200ct_yellow_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D166_RD_200ct_yellow_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -620,11 +764,19 @@ export const styleSeedData = [
     "id": "RING-012",
     "category": "ring",
     "subcategory": "engagementRing",
-    "coverImage": "/assets/designs/BE1D1602_white_Oval_top_2_carat.jpg",
+    "coverImage": "/assets/designs/BE1D1602_yellow_Emerald_top_2_carat.jpg",
     "media": [
       {
         "kind": "image",
-        "src": "/assets/designs/BE1D1602_white_Oval_top_2_carat.jpg"
+        "src": "/assets/designs/BE1D1602_yellow_Emerald_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D1602_EM_200ct_yellow_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D1602_EM_200ct_yellow_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -681,6 +833,14 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/BE1D1516_white_Round_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D1516_RD_200ct_white_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D1516_RD_200ct_white_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -732,11 +892,19 @@ export const styleSeedData = [
     "id": "RING-014",
     "category": "ring",
     "subcategory": "engagementRing",
-    "coverImage": "/assets/designs/BE1D2414_white_Oval_top_2_carat.jpg",
+    "coverImage": "/assets/designs/BE1D2414_yellow_Emerald_top_2_carat.jpg",
     "media": [
       {
         "kind": "image",
-        "src": "/assets/designs/BE1D2414_white_Oval_top_2_carat.jpg"
+        "src": "/assets/designs/BE1D2414_yellow_Emerald_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D2414_EM_200ct_yellow_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D2414_EM_200ct_yellow_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -793,6 +961,10 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/BE1D64_RD_200ct_white_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D64_RD_200ct_yellow_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -844,11 +1016,15 @@ export const styleSeedData = [
     "id": "RING-016",
     "category": "ring",
     "subcategory": "engagementRing",
-    "coverImage": "/assets/designs/BE1D145_white_Round_top_2_carat.jpg",
+    "coverImage": "/assets/designs/BE1D145_white_Oval_top_2_carat.jpg",
     "media": [
       {
         "kind": "image",
-        "src": "/assets/designs/BE1D145_white_Round_top_2_carat.jpg"
+        "src": "/assets/designs/BE1D145_white_Oval_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D145_OV_200ct_white_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -905,6 +1081,10 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/BE1D6362P_RD_200ct_white_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1D6362P_RD_200ct_white_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -956,11 +1136,19 @@ export const styleSeedData = [
     "id": "RING-018",
     "category": "ring",
     "subcategory": "engagementRing",
-    "coverImage": "/assets/designs/BE1524_white_Emerald_top_2_carat.jpg",
+    "coverImage": "/assets/designs/BE1524_yellow_Emerald_top_2_carat.jpg",
     "media": [
       {
         "kind": "image",
-        "src": "/assets/designs/BE1524_white_Emerald_top_2_carat.jpg"
+        "src": "/assets/designs/BE1524_yellow_Emerald_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1524_EM_200ct_yellow_side1.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1524_EM_200ct_yellow_side2.jpg"
       }
     ],
     "mediaComplete": true,
@@ -1012,8 +1200,12 @@ export const styleSeedData = [
     "id": "RING-019",
     "category": "ring",
     "subcategory": "engagementRing",
-    "coverImage": "/assets/designs/BNS12xBNH01_M1_RND_DIM_wht_0100CT_W_W.002.jpg",
+    "coverImage": "/assets/designs/BNS12xBNH01_M1_RND_DIM_wht_0100CT_W_W.001.jpg",
     "media": [
+      {
+        "kind": "image",
+        "src": "/assets/designs/BNS12xBNH01_M1_RND_DIM_wht_0100CT_W_W.001.jpg"
+      },
       {
         "kind": "image",
         "src": "/assets/designs/BNS12xBNH01_M1_RND_DIM_wht_0100CT_W_W.002.jpg"
@@ -1073,6 +1265,10 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/six-prong-solitaire-engagement-ring-knife-edge-shank__02947.1783355634.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/six-prong-solitaire-engagement-ring-knife-edge-shank-side__34860.1783355644.jpg"
       }
     ],
     "mediaComplete": true,
@@ -1129,6 +1325,10 @@ export const styleSeedData = [
       {
         "kind": "image",
         "src": "/assets/designs/BE1DT2686_white_Round_top_2_carat.jpg"
+      },
+      {
+        "kind": "image",
+        "src": "/assets/designs/BE1DT2686_RD_200ct_white_side1.jpg"
       }
     ],
     "mediaComplete": true,

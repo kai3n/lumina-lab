@@ -8,9 +8,12 @@ import { putSettingsValues, getSettingsValues, PUBLIC_SETTINGS_KEYS } from "../s
 import { closePool } from "../server/db.js";
 
 const FORCE = process.env.FORCE === "1";
+// FORCE_STYLES=1: 스타일 카탈로그만 강제 갱신(CSV 재임포트 반영), 설정(diamondPricing·
+// styleSpecs·메탈 시세 등)은 어드민 콘솔이 진실이므로 빈 키 채우기만 유지한다.
+const FORCE_STYLES = FORCE || process.env.FORCE_STYLES === "1";
 
 const existingStyles = await listAdminStyles();
-if (existingStyles.length > 0 && !FORCE) {
+if (existingStyles.length > 0 && !FORCE_STYLES) {
   console.log(`styles: server already has ${existingStyles.length} — skipped (FORCE=1 to overwrite)`);
 } else {
   const styles = listOpsStyles();

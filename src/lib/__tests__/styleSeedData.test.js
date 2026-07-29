@@ -37,6 +37,7 @@ const expectedProductTitles = {
   "RING-023": "Low Dome Basket Eternity Band",
   "RING-024": "Pavé Band",
   "RING-025": "Channel Set Band",
+  "RING-026": "Classic Four-Prong Hidden Halo Three Stone",
   "EARR-001": "Round Diamond Stud Earrings",
   "EARR-002": "Inside-Out Hoop Earrings",
   "EARR-003": "Princess Halo Stud Earrings",

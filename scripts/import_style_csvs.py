@@ -264,7 +264,14 @@ def subcat(cat, name):
 def cell(r, i): return r[i].strip() if i < len(r) and r[i] else ""
 def rows(p):
     with p.open(newline="", encoding="utf-8-sig") as f: return list(csv.reader(f))
-def parse_imgs(v): return [p.strip() for p in v.split("|") if p.strip().startswith("http")]
+def parse_imgs(v):
+    # 구분자는 ASCII '|' 또는 전각 '｜'(스프레드시트 입력) — 동일 URL 중복은 제거
+    seen, out = set(), []
+    for p in v.replace("｜", "|").split("|"):
+        p = p.strip()
+        if p.startswith("http") and p not in seen:
+            seen.add(p); out.append(p)
+    return out
 
 # --- keep each carousel scoped to one product family (drop mixed-SKU extras) ---
 def _sig_from_code(code):
@@ -273,7 +280,14 @@ def _sig_from_code(code):
 def _signature(url):
     u = unquote(url or "")
     m = re.search(r"/productimages/([^/]+)/", u) or re.search(r"/pid/([^/?#]+)", u)
-    return _sig_from_code(m.group(1)) if m else ""
+    if m: return _sig_from_code(m.group(1))
+    m = re.search(r"[/-](BE[A-Z0-9]+)[-_]", u)  # Brilliant Earth 렌더/상품 코드 (탑뷰·사이드샷 공통)
+    if m: return m.group(1)
+    m = re.search(r"/Custom/([^/]+)/", u)       # Blue Nile 팩샷 세트 코드
+    if m: return m.group(1)
+    m = re.search(r"/products/(\d+)/", u)       # BigCommerce 상품 id (jewelrypoint)
+    if m: return m.group(1)
+    return ""
 def related_media(urls, ref=""):
     media = [u for u in urls if u.startswith("http")]
     if not media: return []
@@ -321,11 +335,25 @@ def parse_earrings():
             if imgs: out.append(("earrings", hoop, cell(r, 4), cell(r, 7), imgs))
     return out
 
+def existing_id_map():
+    """기존 styleSeedData.js의 ID를 (category, en 이름) 기준으로 고정한다.
+    CSV 중간에 행이 삽입돼도 기존 스타일 번호가 밀리지 않게(서버 starter_designs·주문의
+    스타일 참조 보존) — 새 스타일만 카테고리별 최대 번호 다음을 받는다."""
+    if not OUT.exists(): return {}, {}
+    m = re.search(r"export const styleSeedData = (\[.*\]);", OUT.read_text(encoding="utf-8"), re.S)
+    if not m: return {}, {}
+    ids, maxn = {}, {}
+    for s in json.loads(m.group(1)):
+        ids.setdefault((s["category"], s["name"]["en"]), []).append(s["id"])
+        num = int(s["id"].rsplit("-", 1)[1])
+        maxn[s["category"]] = max(maxn.get(s["category"], 0), num)
+    return ids, maxn
+
 def build():
     parsed = (parse_engagement() + parse_table("bands", "ring") + parse_earrings()
               + parse_table("bracelets", "bangle") + parse_table("necklaces", "necklace"))
-    counters = {"ring": 0, "earrings": 0, "bangle": 0, "necklace": 0}
     prefix = {"ring": "RING", "earrings": "EARR", "bangle": "BRAC", "necklace": "NECK"}
+    prev_ids, maxn = existing_id_map()
     styles = []
     for cat, en, zh, ref, urls in parsed:
         en = product_title_for(ref, urls) or en   # SKU-based canonical name for products
@@ -333,8 +361,12 @@ def build():
         local = [p for p in (localize(u) for u in urls[:5]) if p]
         if not local:
             print(f"  (skip, no image) {en}"); continue
-        counters[cat] += 1
-        sid = f"{prefix[cat]}-{counters[cat]:03d}"
+        bucket = prev_ids.get((cat, en))
+        if bucket:
+            sid = bucket.pop(0)                    # 기존 스타일 → 기존 ID 유지
+        else:
+            maxn[cat] = maxn.get(cat, 0) + 1       # 신규 스타일 → 다음 번호
+            sid = f"{prefix[cat]}-{maxn[cat]:03d}"
         w, labor, lead, metals = DEFAULTS[cat]
         s = {
             "id": sid, "category": cat, "subcategory": subcat(cat, en),
