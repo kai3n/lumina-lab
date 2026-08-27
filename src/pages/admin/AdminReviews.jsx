@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "../../lib/api.js";
 import { MediaPicker, MediaThumb, Stars } from "../../components/ui.jsx";
 import { useLocale } from "../../i18n.jsx";
+import { buildReviewMediaPayload } from "../../lib/reviewMedia.js";
 import { ConsoleHead } from "./console.jsx";
 
 // 홈 "Loved & Worn" 리뷰 큐레이션 — 실서버(Postgres) CRUD.
@@ -22,7 +23,22 @@ export default function AdminReviews() {
   const [draft, setDraft] = useState(null); // null | 편집중 객체
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
+
+  function openDraft(next) {
+    setUploadBusy(false);
+    setUploadError("");
+    setError("");
+    setDraft(next);
+  }
+
+  function closeDraft() {
+    setUploadBusy(false);
+    setUploadError("");
+    setDraft(null);
+  }
 
   const load = useCallback(async () => {
     try {
@@ -41,18 +57,24 @@ export default function AdminReviews() {
   }
 
   function save() {
-    if (!draft.quote.trim() || busy) return;
+    if (!draft.quote.trim() || busy || uploadBusy || uploadError) return;
+    let media;
+    try {
+      media = buildReviewMediaPayload(draft.media, { allowRootRelative: true });
+    } catch (e) {
+      setError(e.code || e.message);
+      return;
+    }
     const body = {
       name: draft.name, location: draft.location, rating: Number(draft.rating) || 5,
       quote: draft.quote, body: draft.body,
-      // 절대 URL + 루트 상대(/assets/.. 시드 미디어) 허용 — base64 프리뷰만 제외
-      media: draft.media.filter((m) => /^(https?:\/\/|\/(?!\/))/.test(m.src || "")).slice(0, 5),
+      media,
       status: draft.status,
     };
     call(async () => {
       if (draft.id) await apiFetch(`/admin/reviews/${draft.id}`, { method: "PATCH", body });
       else await apiFetch("/admin/reviews", { method: "POST", body: { ...body, orderCode: draft.orderCode || "" } });
-      setDraft(null);
+      closeDraft();
     });
   }
 
@@ -62,7 +84,7 @@ export default function AdminReviews() {
   return (
     <>
       <ConsoleHead kicker="Loved & Worn" title={c.title} sub={c.sub}>
-        <button className="button primary small" onClick={() => setDraft({ ...EMPTY })}>{c.add}</button>
+        <button className="button primary small" onClick={() => openDraft({ ...EMPTY })}>{c.add}</button>
       </ConsoleHead>
 
       {error && <p className="form-error" style={{ marginBottom: 12 }}>{error}</p>}
@@ -80,7 +102,17 @@ export default function AdminReviews() {
           <label className="field"><span>{c.quote}</span><input value={draft.quote} onChange={(e) => set({ quote: e.target.value })} /></label>
           <label className="field"><span>{c.body}</span><textarea rows={2} value={draft.body} onChange={(e) => set({ body: e.target.value })} /></label>
           <div className="field"><span>{c.media}</span>
-            <MediaPicker value={draft.media} onChange={(m) => set({ media: m })} maxItems={5} showSamples={false} previewMode="list" scope="review" />
+            <MediaPicker
+              value={draft.media}
+              onChange={(m) => set({ media: m })}
+              maxItems={5}
+              showSamples={false}
+              previewMode="list"
+              scope="review"
+              remoteRequired
+              onBusyChange={setUploadBusy}
+              onErrorChange={setUploadError}
+            />
           </div>
           <label className="field" style={{ maxWidth: 220 }}><span>{c.status}</span>
             <select value={draft.status} onChange={(e) => set({ status: e.target.value })}>
@@ -88,8 +120,8 @@ export default function AdminReviews() {
             </select>
           </label>
           <div className="row-actions">
-            <button className="button primary small" disabled={!draft.quote.trim() || busy} onClick={save}>{c.save}</button>
-            <button className="button secondary small" onClick={() => setDraft(null)}>{c.cancel}</button>
+            <button className="button primary small" disabled={!draft.quote.trim() || busy || uploadBusy || Boolean(uploadError)} onClick={save}>{c.save}</button>
+            <button className="button secondary small" onClick={closeDraft}>{c.cancel}</button>
           </div>
         </div>
       )}
@@ -108,7 +140,7 @@ export default function AdminReviews() {
               <p className="spec"><Stars value={r.rating} /> {r.rating} · {r.name}{r.location ? ` · ${r.location}` : ""}</p>
               {r.body && <p className="form-hint">{r.body}</p>}
               <div className="row-actions" style={{ marginTop: 10 }}>
-                <button className="button secondary small" disabled={busy} onClick={() => setDraft({ ...EMPTY, ...r })}>{c.edit}</button>
+                <button className="button secondary small" disabled={busy} onClick={() => openDraft({ ...EMPTY, ...r })}>{c.edit}</button>
                 {r.status !== "published"
                   ? <button className="button secondary small" disabled={busy} onClick={() => setStatus(r.id, "published")}>{c.publish}</button>
                   : <button className="button secondary small" disabled={busy} onClick={() => setStatus(r.id, "hidden")}>{c.hide}</button>}

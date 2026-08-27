@@ -722,7 +722,7 @@ async function uploadOrNull(blob, scope, contentType) {
 }
 
 function isDurableMediaUrl(src) {
-  return /^https?:\/\//i.test(String(src || ""));
+  return /^(https?:\/\/|\/(?!\/))/i.test(String(src || ""));
 }
 
 async function optimizeImageFile(file, scope, remoteRequired) {
@@ -856,7 +856,7 @@ const REQUIRED_UPLOAD_COPY = {
 };
 
 // Parent contract:
-// - remoteRequired: only durable http(s) uploads are emitted through onChange.
+// - remoteRequired: only durable http(s)/same-origin URLs are emitted through onChange.
 // - onBusyChange: lets a workflow disable navigation/submission while work runs.
 // - onErrorChange: mirrors the visible actionable error; an empty string clears it.
 // The defaults preserve intentional static-demo/local-preview behavior.
@@ -881,6 +881,7 @@ export function MediaPicker({
   const errorCallbackRef = useRef(onErrorChange);
   const mountedRef = useRef(false);
   const operationRef = useRef(0);
+  const requiredFailureRef = useRef(false);
   const items = Array.isArray(value) ? value : [];
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -912,18 +913,26 @@ export function MediaPicker({
     errorCallbackRef.current?.(error);
   }, [error]);
 
-  useEffect(() => () => busyCallbackRef.current?.(false), []);
+  useEffect(() => () => {
+    busyCallbackRef.current?.(false);
+    errorCallbackRef.current?.("");
+  }, []);
 
   useEffect(() => {
     if (remoteRequired && items.some((item) => (
       item?.transient || !isDurableMediaUrl(item?.src)
     ))) {
+      requiredFailureRef.current = true;
       setError(REQUIRED_UPLOAD_COPY[locale] || REQUIRED_UPLOAD_COPY.en);
     }
   }, [items, locale, remoteRequired]);
 
   function changeItems(nextItems) {
-    setError("");
+    setError(
+      remoteRequired && requiredFailureRef.current
+        ? REQUIRED_UPLOAD_COPY[locale] || REQUIRED_UPLOAD_COPY.en
+        : "",
+    );
     setNotice("");
     onChange(nextItems);
   }
@@ -937,6 +946,7 @@ export function MediaPicker({
       return;
     }
     if (!exists && remoteRequired && !isDurableMediaUrl(item.src)) {
+      requiredFailureRef.current = true;
       setError(REQUIRED_UPLOAD_COPY[locale] || REQUIRED_UPLOAD_COPY.en);
       return;
     }
@@ -971,6 +981,7 @@ export function MediaPicker({
         .map((result) => result.value);
       if (!mountedRef.current || operation !== operationRef.current) return;
       const failed = results.find((result) => result.status === "rejected")?.reason;
+      if (remoteRequired) requiredFailureRef.current = Boolean(failed);
       if (files.length > remainingSlots) setError(p.picker.maxError(maxItems));
       else if (failed?.message === "fileTooLarge") setError(p.picker.fileError(MAX_UPLOAD_MB));
       else if (failed?.message === "unsupportedType") setError(p.picker.typeError);

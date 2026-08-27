@@ -41,6 +41,10 @@ export async function uploadMedia(blob, { scope, contentType }) {
     method: "POST",
     body: { scope, contentType, size: blob.size },
   });
+  if (!/^https?:\/\//i.test(String(uploadUrl || ""))
+    || !/^(https?:\/\/|\/(?!\/))/i.test(String(publicUrl || ""))) {
+    throw new ApiRequestError("INVALID_UPLOAD_RESPONSE", 502);
+  }
   let res;
   try {
     res = await fetch(uploadUrl, {

@@ -5,7 +5,13 @@ import { join } from "node:path";
 import request from "supertest";
 import { createApp } from "../app.js";
 import { __resetRateLimit } from "../rateLimit.js";
-import { __resetLocalMediaStateForTests, createReadUrl, createUploadUrl } from "../media.js";
+import {
+  __resetLocalMediaStateForTests,
+  createReadUrl,
+  createUploadUrl,
+  isTrustedPublicMediaUrl,
+  readableMediaUrl,
+} from "../media.js";
 
 const app = createApp();
 const R2_KEYS = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET", "R2_PUBLIC_URL"];
@@ -68,6 +74,25 @@ describe("미디어 presigned 업로드", () => {
     expect(publicFile.headers["cache-control"]).toContain("immutable");
     expect(Buffer.compare(publicFile.body, bytes)).toBe(0);
     expect((await request(app).get("/v1/media/status")).body).toEqual({ configured: true, provider: "local" });
+  });
+
+  it("PUBLIC_ORIGIN 없는 로컬 개발은 same-origin 상대 chat URL만 신뢰한다", () => {
+    const key = "chat/2026-08-27/0123456789abcdef01234567.jpg";
+    expect(isTrustedPublicMediaUrl(`/v1/media/local/${key}`, { scope: "chat" })).toBe(true);
+    expect(isTrustedPublicMediaUrl(`http://127.0.0.1:8787/v1/media/local/${key}`, { scope: "chat" })).toBe(false);
+    expect(isTrustedPublicMediaUrl(`http://localhost:5173/v1/media/local/${key}`, { scope: "chat" })).toBe(false);
+    expect(isTrustedPublicMediaUrl(`https://evil.example/v1/media/local/${key}`, { scope: "chat" })).toBe(false);
+    expect(isTrustedPublicMediaUrl(`http://127.0.0.1:8787/v1/media/local/review/2026-08-27/0123456789abcdef01234567.jpg`, { scope: "chat" })).toBe(false);
+  });
+
+  it("로컬 chat 발급 URL은 request Host를 저장하지 않는 same-origin 상대 경로다", async () => {
+    const signed = await request(app).post("/v1/media/upload-url")
+      .set("Host", "192.168.10.25:8787")
+      .send({ scope: "chat", contentType: "image/jpeg", size: 8 });
+    expect(signed.status).toBe(201);
+    expect(signed.body.uploadUrl).toMatch(/^http:\/\/192\.168\.10\.25:8787\/v1\/media\/local-upload\//);
+    expect(signed.body.publicUrl).toMatch(/^\/v1\/media\/local\/chat\//);
+    expect(isTrustedPublicMediaUrl(signed.body.publicUrl, { scope: "chat" })).toBe(true);
   });
 
   it("local PUT은 발급된 MIME과 바이트 수를 강제한다", async () => {
@@ -153,9 +178,10 @@ describe("미디어 presigned 업로드", () => {
     }
   });
 
-  it("Tencent COS 설정 시 S3 호환 서명 URL을 발급한다", async () => {
+  it("Tencent COS 일반 업로드는 안정적인 same-origin 읽기 URL을 반환하고 매 GET마다 짧게 서명한다", async () => {
     Object.assign(process.env, {
       MEDIA_PROVIDER: "cos",
+      PUBLIC_ORIGIN: "https://app.delune.example",
       COS_REGION: "ap-guangzhou",
       COS_ACCESS_KEY_ID: "secret-id",
       COS_SECRET_ACCESS_KEY: "secret-key",
@@ -167,8 +193,22 @@ describe("미디어 presigned 업로드", () => {
         .send({ scope: "qc", contentType: "image/jpeg", size: 2048 });
       expect(res.status).toBe(201);
       expect(res.body.uploadUrl).toContain("delune-vendor-1250000000.cos.ap-guangzhou.myqcloud.com/qc/");
-      expect(res.body.publicUrl).toMatch(/^https:\/\/media\.delune\.example\/qc\/\d{4}-\d{2}-\d{2}\/[a-f0-9]{24}\.jpg$/);
+      expect(res.body.publicUrl).toMatch(/^https:\/\/app\.delune\.example\/v1\/media\/read\/cos\/qc\/\d{4}-\d{2}-\d{2}\/[a-f0-9]{24}\.jpg$/);
       expect((await request(app).get("/v1/media/status")).body).toEqual({ configured: true, provider: "cos" });
+
+      const read = await request(app).get(new URL(res.body.publicUrl).pathname).redirects(0);
+      expect(read.status).toBe(302);
+      expect(read.headers.location).toContain("delune-vendor-1250000000.cos.ap-guangzhou.myqcloud.com/qc/");
+      expect(read.headers.location).toContain("X-Amz-Expires=600");
+      expect(read.headers["cache-control"]).toContain("no-store");
+      expect(read.headers["referrer-policy"]).toBe("no-referrer");
+
+      const legacy = "https://media.delune.example/review/2026-08-27/0123456789abcdef01234567.jpg";
+      expect(readableMediaUrl(legacy)).toBe(
+        "https://app.delune.example/v1/media/read/cos/review/2026-08-27/0123456789abcdef01234567.jpg",
+      );
+      expect(readableMediaUrl("https://media.delune.example/vendor/42/qc/2026-08-27/0123456789abcdef01234567.mp4"))
+        .toBe("https://media.delune.example/vendor/42/qc/2026-08-27/0123456789abcdef01234567.mp4");
       const readUrl = await createReadUrl({ key: "vendor/42/qc/2026-07-19/0123456789abcdef01234567.mp4", provider: "cos" });
       expect(readUrl).toContain("delune-vendor-1250000000.cos.ap-guangzhou.myqcloud.com/vendor/42/qc/");
       expect(readUrl).toContain("X-Amz-Expires=600");
@@ -178,9 +218,33 @@ describe("미디어 presigned 업로드", () => {
         keyPrefix: "vendor/42", provider: "cos", videoMaxBytes: 200 * 1024 * 1024,
       });
       expect(vendorVideo.provider).toBe("cos");
+      expect(vendorVideo.publicUrl).toBeNull();
+      expect(vendorVideo.key).toMatch(/^vendor\/42\/qc\/\d{4}-\d{2}-\d{2}\/[a-f0-9]{24}\.mp4$/);
+      expect((await request(app).get(`/v1/media/read/cos/${vendorVideo.key}`)).status).toBe(404);
     } finally {
       for (const key of COS_KEYS) delete process.env[key];
       delete process.env.MEDIA_PROVIDER;
+    }
+  });
+
+  it("COS 자격증명은 일반 미디어 provider로 암묵 선택되지 않는다", async () => {
+    process.env.NODE_ENV = "production";
+    Object.assign(process.env, {
+      COS_REGION: "ap-guangzhou",
+      COS_ACCESS_KEY_ID: "secret-id",
+      COS_SECRET_ACCESS_KEY: "secret-key",
+      COS_BUCKET: "delune-vendor-1250000000",
+      COS_PUBLIC_URL: "https://media.delune.example",
+    });
+    try {
+      const res = await request(app).post("/v1/media/upload-url")
+        .send({ scope: "review", contentType: "image/jpeg", size: 2048 });
+      expect(res.status).toBe(503);
+      expect(res.body.error.code).toBe("MEDIA_NOT_CONFIGURED");
+      expect((await request(app).get("/v1/media/status")).body).toEqual({ configured: false, provider: null });
+    } finally {
+      process.env.NODE_ENV = "test";
+      for (const key of COS_KEYS) delete process.env[key];
     }
   });
 });

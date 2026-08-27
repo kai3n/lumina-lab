@@ -56,6 +56,10 @@ export async function uploadChatImage(blob, contentType) {
     method: "POST",
     body: { contentType, size: blob.size },
   });
+  if (!/^https?:\/\//i.test(String(uploadUrl || ""))
+    || !/^(https?:\/\/|\/(?!\/))/i.test(String(publicUrl || ""))) {
+    throw new Error("INVALID_UPLOAD_RESPONSE");
+  }
   const res = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": contentType }, body: blob });
   if (!res.ok) throw new Error("UPLOAD_FAILED");
   return publicUrl;

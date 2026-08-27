@@ -1,7 +1,14 @@
 import express, { Router } from "express";
 import { ApiError } from "./errors.js";
 import { rateLimit } from "./rateLimit.js";
-import { createUploadUrl, consumeLocalUpload, getLocalMedia, mediaProvider } from "./media.js";
+import {
+  createReadUrl,
+  createUploadUrl,
+  consumeLocalUpload,
+  getLocalMedia,
+  isPublicMediaKey,
+  mediaProvider,
+} from "./media.js";
 
 const MINUTE = 60 * 1000;
 
@@ -65,6 +72,27 @@ export function mediaRouter() {
       return res.sendFile(media.path, (error) => { if (error) next(error); });
     } catch (error) { return next(error); }
   });
+
+  // Stable URL for general media stored in a private COS bucket. The random
+  // 96-bit object key remains the bearer capability just as it was with R2,
+  // while vendor/* can never match this three-segment public-key contract.
+  // Never cache the redirect itself: its target signature expires in 10 min.
+  r.get("/read/cos/:scope/:date/:file",
+    rateLimit({ limit: 300, windowMs: MINUTE, keyFn: (req) => `media-read:${req.ip}` }),
+    async (req, res, next) => {
+      try {
+        const key = `${req.params.scope}/${req.params.date}/${req.params.file}`;
+        if (!isPublicMediaKey(key)) return next(new ApiError("NOT_FOUND", 404));
+        const signed = await createReadUrl({ key, provider: "cos" });
+        res.set({
+          "Cache-Control": "private, no-store, max-age=0",
+          "CDN-Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+          "X-Robots-Tag": "noindex, nofollow, noarchive",
+        });
+        return res.redirect(302, signed);
+      } catch (error) { return next(error); }
+    });
 
   r.get("/status", (_req, res) => {
     const provider = mediaProvider();
