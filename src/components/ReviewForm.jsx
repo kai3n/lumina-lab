@@ -12,8 +12,12 @@ export default function ReviewForm({ orderId, rc, onDone, submit: submitOverride
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [pickerBusy, setPickerBusy] = useState(false);
+  const [pickerError, setPickerError] = useState("");
+  const serverBacked = Boolean(submitOverride);
+  const submitBlocked = busy || pickerBusy || (serverBacked && Boolean(pickerError));
   async function submit() {
-    if (!quote.trim() || busy) return;
+    if (!quote.trim() || submitBlocked) return;
     setBusy(true);
     setError("");
     try {
@@ -30,7 +34,17 @@ export default function ReviewForm({ orderId, rc, onDone, submit: submitOverride
   return (
     <div className="form-stack review-form">
       <div className="field"><span>{rc.mediaLbl}</span>
-        <MediaPicker value={media} onChange={setMedia} maxItems={5} showSamples={false} previewMode="list" scope="review" />
+        <MediaPicker
+          value={media}
+          onChange={setMedia}
+          maxItems={5}
+          showSamples={false}
+          previewMode="list"
+          scope="review"
+          remoteRequired={serverBacked}
+          onBusyChange={setPickerBusy}
+          onErrorChange={setPickerError}
+        />
       </div>
       <div className="field"><span>{rc.rating}</span>
         <div className="review-stars" role="radiogroup" aria-label={rc.rating}>
@@ -53,7 +67,7 @@ export default function ReviewForm({ orderId, rc, onDone, submit: submitOverride
       </label>
       <p className="form-hint">{rc.note}</p>
       {error && <p className="form-error">{error}</p>}
-      <button className="button primary" type="button" disabled={!quote.trim() || busy} onClick={submit}>{rc.submit}</button>
+      <button className="button primary" type="button" disabled={!quote.trim() || submitBlocked} onClick={submit}>{rc.submit}</button>
     </div>
   );
 }

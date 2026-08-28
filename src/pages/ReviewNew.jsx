@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth.jsx";
 import { apiFetch } from "../lib/api.js";
+import { buildReviewMediaPayload } from "../lib/reviewMedia.js";
 import { listOpsOrders, listReviews, portalView } from "../lib/store.js";
 import { useDBVersion } from "../lib/useDB.js";
 import { useLocale } from "../i18n.jsx";
@@ -133,7 +134,7 @@ export default function ReviewNew() {
     setVerified({ mode: "demo", orderCode: id });
   }
 
-  // 실서버 제출 — R2 publicUrl만 (base64/blob 프리뷰 제외), 서버가 pending으로 저장
+  // 실서버 제출은 모든 선택 파일의 원격 업로드가 끝났을 때만 진행한다.
   const serverSubmit = verified?.mode === "server"
     ? async ({ rating, quote, body, media }) => {
       await apiFetch("/reviews", {
@@ -141,7 +142,7 @@ export default function ReviewNew() {
         body: {
           orderCode: verified.orderCode, tracking: verified.tracking || "",
           rating, quote, body,
-          media: media.filter((m) => /^https?:\/\//.test(m.src || "")).slice(0, 5),
+          media: buildReviewMediaPayload(media),
         },
       });
     }

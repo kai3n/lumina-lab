@@ -134,7 +134,7 @@ describe("라이브챗", () => {
     const res = await request(app).post("/v1/chat/messages").send({
       body: "Here is my inspiration photo",
       attachments: [
-        { url: "https://cdn.example.com/ring.jpg", contentType: "image/jpeg", name: "ring.jpg" },
+        { url: "https://cdn.example.com/chat/2026-08-27/0123456789abcdef01234567.jpg", contentType: "image/jpeg", name: "ring.jpg" },
         { url: "https://evil.example.net/tracker.gif", contentType: "image/gif", name: "x.gif" },
       ],
       locale: "en",

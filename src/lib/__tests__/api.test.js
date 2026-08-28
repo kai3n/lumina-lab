@@ -46,6 +46,19 @@ describe("uploadMedia — presigned R2 직행 업로드", () => {
     expect(putCall[1]).toMatchObject({ method: "PUT", headers: { "Content-Type": "image/jpeg" }, body: blob });
   });
 
+  it("개발용 same-origin 상대 publicUrl도 영구 미디어 계약으로 허용한다", async () => {
+    const blob = new Blob(["local"], { type: "image/jpeg" });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        uploadUrl: "http://127.0.0.1:8787/v1/media/local-upload/token",
+        publicUrl: "/v1/media/local/review/2026-08-27/0123456789abcdef01234567.jpg",
+      }, 201))
+      .mockResolvedValueOnce({ ok: true, status: 204 }));
+    await expect(uploadMedia(blob, { scope: "review", contentType: "image/jpeg" }))
+      .resolves.toBe("/v1/media/local/review/2026-08-27/0123456789abcdef01234567.jpg");
+  });
+
   it("서버 부재(발급 실패)는 ApiUnavailableError 전파 — 호출부 로컬 폴백 신호", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
     await expect(uploadMedia(new Blob(["x"]), { scope: "reference", contentType: "image/jpeg" }))
@@ -67,5 +80,16 @@ describe("uploadMedia — presigned R2 직행 업로드", () => {
     err = await uploadMedia(new Blob(["x"]), { scope: "review", contentType: "image/jpeg" }).catch((e) => e);
     expect(err.code).toBe("UPLOAD_FAILED");
     expect(err.status).toBe(403);
+  });
+
+  it("서버가 유효한 http(s) uploadUrl/publicUrl 계약을 주지 않으면 PUT 전에 실패한다", async () => {
+    const blob = new Blob(["x"], { type: "image/jpeg" });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: true, uploadUrl: "javascript:alert(1)", publicUrl: "data:image/jpeg,x" }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+    const err = await uploadMedia(blob, { scope: "review", contentType: "image/jpeg" }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiRequestError);
+    expect(err.code).toBe("INVALID_UPLOAD_RESPONSE");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

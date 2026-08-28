@@ -4,6 +4,7 @@ import { query, withTransaction } from "./db.js";
 import { ApiError } from "./errors.js";
 import { nextCode } from "./codes.js";
 import { maskContacts } from "../src/lib/masking.js";
+import { readableMediaUrl } from "./media.js";
 
 // 운송장 비교는 포맷 관용 — 공백/하이픈/대소문자 차이로 실패하지 않게 영숫자만 남긴다
 const normalizeTracking = (s) => String(s || "").replace(/[^0-9a-z]/gi, "").toUpperCase();
@@ -15,21 +16,36 @@ const SRC_OK = /^(https?:\/\/|\/(?!\/))/;
 const clampRating = (v) => Math.min(5, Math.max(1, Math.round((Number(v) || 5) * 2) / 2));
 
 function sanitizeMedia(media) {
-  if (!Array.isArray(media)) return [];
-  return media
-    .filter((m) => m && typeof m.src === "string" && SRC_OK.test(m.src))
-    .slice(0, 5)
-    .map((m) => ({
+  if (media == null) return [];
+  if (!Array.isArray(media) || media.length > 5) {
+    throw new ApiError("VALIDATION_ERROR", 400, "invalid review media");
+  }
+  return media.map((m) => {
+    if (!m || m.transient || typeof m.src !== "string" || !SRC_OK.test(m.src)) {
+      throw new ApiError("VALIDATION_ERROR", 400, "review media upload incomplete");
+    }
+    if (m.poster && (typeof m.poster !== "string" || !SRC_OK.test(m.poster))) {
+      throw new ApiError("VALIDATION_ERROR", 400, "review media poster upload incomplete");
+    }
+    return {
       kind: m.kind === "video" ? "video" : "image",
       src: m.src,
       ...(typeof m.poster === "string" && SRC_OK.test(m.poster) ? { poster: m.poster } : {}),
-    }));
+    };
+  });
 }
 
 function publicReviewView(row) {
   return {
     id: row.review_code, name: row.name, location: row.location, rating: Number(row.rating),
-    quote: row.quote, body: row.body, media: row.media || [], createdAt: row.created_at,
+    quote: row.quote,
+    body: row.body,
+    media: (row.media || []).map((item) => ({
+      ...item,
+      src: readableMediaUrl(item?.src),
+      ...(item?.poster ? { poster: readableMediaUrl(item.poster) } : {}),
+    })),
+    createdAt: row.created_at,
   };
 }
 

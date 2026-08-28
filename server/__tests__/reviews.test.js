@@ -111,14 +111,22 @@ describe("리뷰 인증·제출·게시", () => {
     const admin = await adminCookie();
     const orderCode = await deliveredOrder(admin, "loop@test.com", "123123");
 
-    const submit = await request(app).post("/v1/reviews").send({
+    const invalid = await request(app).post("/v1/reviews").send({
       orderCode, tracking: "123123", rating: 5,
       quote: "She said yes. call me 010-1234-5678", body: "Perfect.",
       media: [{ kind: "image", src: "https://cdn.example.com/a.jpg" }, { kind: "image", src: "data:image/png;base64,xx" }],
     });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error.code).toBe("VALIDATION_ERROR");
+
+    const submit = await request(app).post("/v1/reviews").send({
+      orderCode, tracking: "123123", rating: 5,
+      quote: "She said yes. call me 010-1234-5678", body: "Perfect.",
+      media: [{ kind: "image", src: "https://cdn.example.com/a.jpg" }],
+    });
     expect(submit.status).toBe(201);
     expect(submit.body.review.quote).not.toContain("010-1234-5678"); // 연락처 마스킹
-    expect(submit.body.review.media).toHaveLength(1); // base64는 버려진다
+    expect(submit.body.review.media).toHaveLength(1);
 
     expect((await request(app).get("/v1/reviews")).body.reviews).toHaveLength(0);
 
@@ -146,6 +154,13 @@ describe("리뷰 인증·제출·게시", () => {
 
   it("어드민 수동 리뷰: 즉시 게시 기본, 삭제 가능. 어드민 라우트는 고객 세션 401.", async () => {
     const admin = await adminCookie();
+    const invalid = await request(app).post("/v1/admin/reviews").set("Cookie", admin).send({
+      name: "Broken", rating: 5, quote: "Do not silently save",
+      media: [{ kind: "image", src: "blob:https://belovediamond.com/not-uploaded" }],
+    });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error.code).toBe("VALIDATION_ERROR");
+
     const created = await request(app).post("/v1/admin/reviews").set("Cookie", admin).send({
       name: "Mina C.", location: "LA", rating: 5, quote: "Obsessed.",
       media: [{ kind: "image", src: "https://belovediamond.com/assets/x.jpg" }],
@@ -192,5 +207,33 @@ describe("리뷰 인증·제출·게시", () => {
 
     const feed = await request(app).get("/v1/reviews");
     expect(feed.body.reviews.map((r) => r.id)).toEqual([newTop, oldTop, mid, low]);
+  });
+
+  it("기존 private COS 리뷰 URL은 DB를 바꾸지 않고 안정적인 same-origin 읽기 URL로 직렬화한다", async () => {
+    Object.assign(process.env, {
+      PUBLIC_ORIGIN: "https://belovediamond.com",
+      COS_PUBLIC_URL: "https://private-cos.example",
+    });
+    try {
+      const admin = await adminCookie();
+      const legacy = "https://private-cos.example/review/2026-08-27/0123456789abcdef01234567.jpg";
+      const created = await request(app).post("/v1/admin/reviews").set("Cookie", admin).send({
+        name: "Legacy", rating: 5, quote: "Recovered", media: [{ kind: "image", src: legacy }],
+      });
+      expect(created.status).toBe(201);
+      expect(created.body.review.media[0].src).toBe(
+        "https://belovediamond.com/v1/media/read/cos/review/2026-08-27/0123456789abcdef01234567.jpg",
+      );
+
+      const feed = await request(app).get("/v1/reviews");
+      expect(feed.body.reviews[0].media[0].src).toBe(
+        "https://belovediamond.com/v1/media/read/cos/review/2026-08-27/0123456789abcdef01234567.jpg",
+      );
+      const stored = await query("select media from customer_reviews where review_code = $1", [created.body.review.id]);
+      expect(stored.rows[0].media[0].src).toBe(legacy);
+    } finally {
+      delete process.env.PUBLIC_ORIGIN;
+      delete process.env.COS_PUBLIC_URL;
+    }
   });
 });

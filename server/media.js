@@ -62,9 +62,15 @@ export function localMediaEnabled(env = process.env) {
 }
 
 export function mediaProvider(env = process.env) {
-  if (env.MEDIA_PROVIDER === "cos") return cosConfigured(env) ? "cos" : null;
-  if (env.MEDIA_PROVIDER === "r2") return r2Configured(env) ? "r2" : null;
-  if (cosConfigured(env)) return "cos";
+  // COS credentials are also used by the private vendor workflow. Never let
+  // their mere presence silently select COS for public/general media again.
+  // A public COS deployment must opt in and uses the stable signed-read
+  // gateway below; the vendor route passes its provider explicitly.
+  if (env.MEDIA_PROVIDER) {
+    if (env.MEDIA_PROVIDER === "cos") return cosConfigured(env) ? "cos" : null;
+    if (env.MEDIA_PROVIDER === "r2") return r2Configured(env) ? "r2" : null;
+    return null;
+  }
   if (r2Configured(env)) return "r2";
   if (localMediaEnabled(env)) return "local";
   return null;
@@ -76,6 +82,7 @@ let _clientKey;
 function cloudConfig(env = process.env, preferredProvider = null) {
   const provider = preferredProvider || mediaProvider(env);
   if (provider === "cos") {
+    if (!cosConfigured(env)) return null;
     return {
       provider,
       region: env.COS_REGION,
@@ -87,6 +94,7 @@ function cloudConfig(env = process.env, preferredProvider = null) {
     };
   }
   if (provider === "r2") {
+    if (!r2Configured(env)) return null;
     return {
       provider,
       region: "auto",
@@ -122,6 +130,74 @@ function client(config) {
 
 // scope: 업로드 용도별 키 프리픽스 (경로 추측 방지를 위해 랜덤 토큰 포함)
 const SCOPES = new Set(["reference", "review", "proposal", "cad", "qc", "style", "chat", "hero"]);
+
+export function isPublicMediaKey(value) {
+  const key = String(value || "");
+  const parts = key.split("/");
+  if (parts.length !== 3 || !SCOPES.has(parts[0])) return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(parts[1])) return false;
+  if (!/^[a-f0-9]{24}\.[a-z0-9]+$/.test(parts[2])) return false;
+  return TYPE_BY_EXT.has(extname(parts[2]).toLowerCase()) && key.length <= 160;
+}
+
+function mediaReadPath(key, provider = "cos") {
+  if (provider !== "cos" || !isPublicMediaKey(key)) {
+    throw new ApiError("VALIDATION_ERROR", 400, "bad public media key");
+  }
+  return `/v1/media/read/${provider}/${key}`;
+}
+
+export function publicMediaReadUrl(key, origin) {
+  const path = mediaReadPath(key);
+  return origin ? `${safeOrigin(origin)}${path}` : path;
+}
+
+function keyFromConfiguredBase(src, base) {
+  if (!base) return null;
+  try {
+    const source = new URL(src);
+    const configured = new URL(base);
+    if (source.origin !== configured.origin || source.search || source.hash) return null;
+    const basePath = configured.pathname.replace(/\/$/, "");
+    if (!source.pathname.startsWith(`${basePath}/`)) return null;
+    const key = decodeURIComponent(source.pathname.slice(basePath.length + 1));
+    return isPublicMediaKey(key) ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+function keyFromSameOriginMediaPath(src, env = process.env) {
+  try {
+    const isRelative = /^\/(?!\/)/.test(String(src || ""));
+    const canonical = env.PUBLIC_ORIGIN ? safeOrigin(env.PUBLIC_ORIGIN) : null;
+    const source = new URL(src, canonical || "http://local.invalid");
+    if (!isRelative && (!canonical || source.origin !== canonical)) return null;
+    const prefixes = ["/v1/media/read/cos/", "/v1/media/local/"];
+    const prefix = prefixes.find((candidate) => source.pathname.startsWith(candidate));
+    if (!prefix || source.search || source.hash) return null;
+    if (prefix === "/v1/media/local/" && !localMediaEnabled(env)) return null;
+    const key = decodeURIComponent(source.pathname.slice(prefix.length));
+    return isPublicMediaKey(key) ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+// Convert only legacy unsigned URLs from the configured private COS origin.
+// Other origins and every vendor/* key remain byte-for-byte unchanged.
+export function readableMediaUrl(src, env = process.env) {
+  if (typeof src !== "string") return src;
+  const key = keyFromConfiguredBase(src, env.COS_PUBLIC_URL);
+  return key ? publicMediaReadUrl(key, env.PUBLIC_ORIGIN) : src;
+}
+
+export function isTrustedPublicMediaUrl(src, { scope, env = process.env } = {}) {
+  const key = keyFromSameOriginMediaPath(src, env)
+    || keyFromConfiguredBase(src, env.R2_PUBLIC_URL)
+    || keyFromConfiguredBase(src, env.COS_PUBLIC_URL);
+  return Boolean(key && (!scope || key.startsWith(`${scope}/`)));
+}
 
 function validateUploadInput({ scope, contentType, size, videoMaxBytes = VIDEO_MAX_BYTES }) {
   if (!SCOPES.has(scope)) throw new ApiError("VALIDATION_ERROR", 400, "bad scope");
@@ -265,7 +341,10 @@ async function createLocalUploadUrl({ scope, contentType, ext, bytes, origin }) 
   const base = safeOrigin(origin);
   return {
     uploadUrl: `${base}/v1/media/local-upload/${token}`,
-    publicUrl: `${base}/v1/media/local/${key}`,
+    // Chat persistence has no request-origin context, so its local URL stays
+    // relative and is intrinsically bound to this app. Other dev workflows
+    // retain the historical absolute URL expected by their submission gates.
+    publicUrl: scope === "chat" ? `/v1/media/local/${key}` : `${base}/v1/media/local/${key}`,
     key,
     provider: "local",
     expiresIn: SIGN_TTL_SECONDS,
@@ -296,7 +375,15 @@ export async function createUploadUrl({ scope, contentType, size, origin, keyPre
     expiresIn: SIGN_TTL_SECONDS,
     unhoistableHeaders: new Set(["content-length"]),
   });
-  const publicUrl = `${config.publicUrl.replace(/\/$/, "")}/${key}`;
+  // Explicit provider/prefix uploads are private vendor objects represented by
+  // key+provider. Public COS objects instead persist a stable first-party URL;
+  // that endpoint mints a fresh short-lived GET signature on every read.
+  const privateUpload = Boolean(provider || prefix);
+  const publicUrl = privateUpload
+    ? null
+    : config.provider === "cos"
+      ? publicMediaReadUrl(key, origin)
+      : `${config.publicUrl.replace(/\/$/, "")}/${key}`;
   return { uploadUrl, publicUrl, key, provider: config.provider, expiresIn: SIGN_TTL_SECONDS };
 }
 

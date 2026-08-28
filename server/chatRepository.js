@@ -3,6 +3,7 @@ import { query, withTransaction } from "./db.js";
 import { hashToken } from "./session.js";
 import { nextCode } from "./codes.js";
 import { ApiError } from "./errors.js";
+import { isTrustedPublicMediaUrl } from "./media.js";
 
 // 라이브챗 저장소 — 스레드는 서버 발급 토큰(bd_chat, 해시 저장)이나 고객 세션으로만
 // 접근. 채팅 본문은 마스킹하지 않는다: 1:1 비공개 채널이라 스태프가 연락처를 봐야 하고,
@@ -23,12 +24,12 @@ export function cleanBody(body) {
 
 export function sanitizeAttachments(list) {
   if (!Array.isArray(list)) return [];
-  // 첨부 URL은 우리 R2 오리진에서 업로드된 것만 허용 — 외부 URL 주입(추적 픽셀·외부 콘텐츠가
-  // 어드민 콘솔/상담 이메일에 렌더되는 것) 차단. 업로드는 presigned PUT로만 발급되므로 정상.
-  const base = (process.env.R2_PUBLIC_URL || "").replace(/\/$/, "");
+  // 첨부 URL은 우리 public-media 경계에서 발급된 chat 키만 허용한다. R2 URL,
+  // same-origin COS read gateway, 개발용 local URL을 함께 검증하면서 외부 추적
+  // 픽셀이나 다른 scope의 객체가 상담 화면/이메일에 렌더되는 것을 막는다.
   return list
     .filter((a) => a && typeof a.url === "string" && a.url)
-    .filter((a) => base && a.url.startsWith(`${base}/`))
+    .filter((a) => isTrustedPublicMediaUrl(a.url, { scope: "chat" }))
     .slice(0, ATTACH_MAX)
     .map((a) => ({
       url: String(a.url).slice(0, 600),
