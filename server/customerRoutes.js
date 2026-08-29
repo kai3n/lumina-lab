@@ -19,11 +19,6 @@ const FULL_ADMIN_EVENTS = new Set([
   "proposal_sent", "deposit_confirmed", "balance_requested", "balance_confirmed", "order_cancelled",
 ]);
 
-// Balance collection is coordinated offline. These events are internal records,
-// not customer-facing messages; notification can be added later as a separate,
-// explicit action without coupling it to order progression.
-const INTERNAL_ADMIN_EVENTS = new Set(["balance_requested", "balance_confirmed"]);
-
 // 메일은 응답 이후 fire-and-forget — 발송 실패가 제출/이벤트를 실패시키지 않는다 (스펙 §5)
 function fireMail(promise, label) {
   promise.catch((e) => console.error(`[orderMail] ${label}: ${e.message}`));
@@ -97,7 +92,7 @@ export function customerRouter() {
         // artifact(포털 공개 미디어/페이로드)·action(열릴 고객 컨펌)은 stage 전이와 같은 트랜잭션에서 발행
         const result = await recordOrderEvent(req.params.orderCode, type, data || {}, { artifact, action });
         res.status(201).json({ ok: true, orderCode: result.orderCode, stage: result.stage, eventId: result.eventId, artifactCode: result.artifactCode || null, actionCode: result.actionCode || null });
-        if (result.notify?.email && !INTERNAL_ADMIN_EVENTS.has(type)) {
+        if (result.notify?.email) {
           // 결제 확인 이벤트면 리포지토리가 확정한 영수증(금액·잔액)을 메일 본문에 싣는다
           const mailData = { ...(data || {}), ...(result.receipt ? { receipt: result.receipt } : {}) };
           fireMail(sendOrderEventMail({ ...result.notify, orderCode: result.orderCode, type, data: mailData }), type);

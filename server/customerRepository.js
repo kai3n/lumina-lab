@@ -561,6 +561,11 @@ function normalizeShippingAddress(address) {
   return clean;
 }
 
+function hasCompleteShippingAddress(address) {
+  return isPlainObject(address)
+    && REQUIRED_SHIPPING_FIELDS.every((key) => typeof address[key] === "string" && address[key].trim());
+}
+
 export async function updateOrderShippingAddress(orderCode, email, address = {}) {
   const clean = normalizeShippingAddress(address);
   return withTransaction(async (client) => {
@@ -599,6 +604,15 @@ export async function updateOrderShippingAddress(orderCode, email, address = {})
 // 완성(FINAL_QC) 이후엔 불가. 완성품은 환불 대상이 아니다.
 const CANCEL_DIRECT_STAGES = ["OPS_REVIEW", "STONE_SELECTION", "QUOTE", "DEPOSIT"];
 const CANCEL_REQUEST_STAGES = ["CAD", "PRODUCTION"];
+
+async function revokeActiveSupplierAssignments(client, orderId) {
+  await client.query(`
+    update supplier_order_assignments
+    set status='revoked', revoked_at=coalesce(revoked_at, now())
+    where order_id=$1 and status='active'
+  `, [orderId]);
+}
+
 export async function cancelOrder(orderCode, email, reason = "") {
   return withTransaction(async (client) => {
     const customer = await requireCustomerByEmail(client, email);
@@ -608,7 +622,10 @@ export async function cancelOrder(orderCode, email, reason = "") {
     );
     const order = rows[0];
     if (!order) throw new ApiError("ORDER_ACCESS_DENIED", 403);
-    if (order.stage === "CANCELLED") return { ok: true, cancelled: true };
+    if (order.stage === "CANCELLED") {
+      await revokeActiveSupplierAssignments(client, order.id);
+      return { ok: true, cancelled: true };
+    }
     const cleanReason = String(reason || "").slice(0, 500);
     // DEPOSIT still names the stage after a customer reports a transfer. Treat
     // that state as money-in-flight and route it to an operator instead of
@@ -624,6 +641,7 @@ export async function cancelOrder(orderCode, email, reason = "") {
         "update customer_actions set status = 'CANCELLED', updated_at = now() where order_id = $1 and status = 'OPEN'",
         [order.id],
       );
+      await revokeActiveSupplierAssignments(client, order.id);
       await client.query(
         `insert into customer_timeline_events (event_code, order_id, title, body, payload)
          values ($1, $2, $3, $4, $5)`,
@@ -633,6 +651,7 @@ export async function cancelOrder(orderCode, email, reason = "") {
     }
     if (depositReported || CANCEL_REQUEST_STAGES.includes(order.stage)) {
       if (await timelineEventExists(client, order.id, "cancel_requested")) {
+        await revokeActiveSupplierAssignments(client, order.id);
         return { ok: true, requested: true, customerEmail: customer.email, locale: customer.locale };
       }
       await client.query(
@@ -643,6 +662,7 @@ export async function cancelOrder(orderCode, email, reason = "") {
         "update customer_actions set status = 'CANCELLED', updated_at = now() where order_id = $1 and status = 'OPEN'",
         [order.id],
       );
+      await revokeActiveSupplierAssignments(client, order.id);
       await client.query(
         `insert into customer_timeline_events (event_code, order_id, title, body, payload)
          values ($1, $2, $3, $4, $5)`,
@@ -722,6 +742,9 @@ export async function reportOrderPayment(orderCode, email, kind) {
       const quoteAction = await latestActionOfKind(client, order.id, "QUOTE_ACCEPTANCE");
       if (!quote || !(Number(quote.payload?.totalUsd) > 0) || actionResponse(quoteAction) !== "APPROVE") {
         throw stateConflict("an approved quote with a total is required", "ORDER_PREREQUISITE_MISSING");
+      }
+      if (!hasCompleteShippingAddress(order.summary?.shippingAddress)) {
+        throw stateConflict("a complete shipping address is required before reporting the deposit", "ORDER_PREREQUISITE_MISSING");
       }
     } else {
       const qcAction = await latestActionOfKind(client, order.id, "FINAL_QC_CONFIRMATION");
@@ -959,7 +982,7 @@ export const EVENT_TRANSITIONS = {
   cad_ready: { stage: "CAD", phase: "APPROVE_DESIGN", waitingOn: "CUSTOMER" },
   production_started: { stage: "PRODUCTION", phase: "MAKING", waitingOn: "BELOVEDIAMOND" },
   qc_ready: { stage: "FINAL_QC", phase: "MAKING", waitingOn: "CUSTOMER" },
-  balance_requested: { stage: "BALANCE", phase: "DELIVERY", waitingOn: "BELOVEDIAMOND" },
+  balance_requested: { stage: "BALANCE", phase: "DELIVERY", waitingOn: "CUSTOMER" },
   balance_confirmed: { stage: "BALANCE", phase: "DELIVERY", waitingOn: "BELOVEDIAMOND" },
   order_cancelled: { stage: "CANCELLED", phase: "CLOSED", waitingOn: "NONE" },
   shipped: { stage: "SHIPPING", phase: "DELIVERY", waitingOn: "EXTERNAL" },
@@ -1174,6 +1197,9 @@ export async function recordOrderEvent(orderCode, type, data = {}, extras = {}) 
       if (!(await timelineEventExists(client, order.id, "balance_requested"))) {
         throw stateConflict("the balance must be requested first", "ORDER_PREREQUISITE_MISSING");
       }
+      if (!(await timelineEventExists(client, order.id, "payment_reported", "balance"))) {
+        throw stateConflict("the customer must report the balance first", "PAYMENT_REPORT_REQUIRED");
+      }
     }
     let refundRecord = null;
     if (type === "order_cancelled") {
@@ -1202,6 +1228,9 @@ export async function recordOrderEvent(orderCode, type, data = {}, extras = {}) 
     if (type === "shipped") {
       if (!(await timelineEventExists(client, order.id, "balance_confirmed"))) {
         throw stateConflict("the balance must be confirmed first", "ORDER_PREREQUISITE_MISSING");
+      }
+      if (!hasCompleteShippingAddress(order.summary?.shippingAddress)) {
+        throw stateConflict("a complete shipping address is required", "ORDER_PREREQUISITE_MISSING");
       }
     }
     if (type === "delivered") {
@@ -1248,6 +1277,7 @@ export async function recordOrderEvent(orderCode, type, data = {}, extras = {}) 
       }
     }
     if (type === "order_cancelled") {
+      await revokeActiveSupplierAssignments(client, order.id);
       await client.query(
         "update customer_actions set status = 'CANCELLED', updated_at = now() where order_id = $1 and status = 'OPEN'",
         [order.id],

@@ -77,7 +77,23 @@ async function inviteAndActivate(admin, email, displayName) {
   return { supplierCode, cookie: accepted.headers["set-cookie"] };
 }
 
-async function advanceSolitaireToProduction(admin, vendorCookie, jobCode) {
+async function uploadVerifiedSupplierMedia(vendorCookie, jobCode, purpose, fileName) {
+  const bytes = Buffer.from(`${purpose.toLowerCase()}-${fileName}`);
+  const signed = await request(app)
+    .post(`/v1/vendor/orders/${jobCode}/media/upload-url`)
+    .set("Cookie", vendorCookie)
+    .send({ purpose, fileName, contentType: "image/jpeg", size: bytes.length });
+  expect(signed.status).toBe(201);
+  await request(app).put(new URL(signed.body.uploadUrl).pathname)
+    .set("Content-Type", "image/jpeg").send(bytes).expect(204);
+  const completed = await request(app)
+    .post(`/v1/vendor/orders/${jobCode}/media/${signed.body.mediaId}/complete`)
+    .set("Cookie", vendorCookie);
+  expect(completed.status).toBe(200);
+  return { assetId: signed.body.mediaId };
+}
+
+async function advanceSolitaireToProduction(admin, vendorCookie, jobCode, orderCode, customerEmail) {
   const accepted = await request(app).post(`/v1/vendor/orders/${jobCode}/stage`).set("Cookie", vendorCookie)
     .send({ type: "ACCEPT" });
   expect(accepted.body.transition.workflowState).toBe("CANDIDATES_REQUIRED");
@@ -139,17 +155,47 @@ async function advanceSolitaireToProduction(admin, vendorCookie, jobCode) {
   });
   await request(app).patch(`/v1/admin/supplier-updates/${estimate.body.update.id}/review`).set("Cookie", admin)
     .send({ status: "approved" });
-  for (const action of ["PREPARE_QUOTE", "CUSTOMER_ACCEPT_QUOTE", "CONFIRM_DEPOSIT"]) {
-    const transition = await request(app).post(`/v1/admin/supplier-jobs/${jobCode}/transition`).set("Cookie", admin).send({ action });
-    expect(transition.status).toBe(200);
-  }
+  const duplicateQuoteTransition = await request(app)
+    .post(`/v1/admin/supplier-jobs/${jobCode}/transition`).set("Cookie", admin)
+    .send({ action: "PREPARE_QUOTE" });
+  expect(duplicateQuoteTransition.status).toBe(400);
+
+  const proposal = await request(app).post(`/v1/admin/orders/${orderCode}/events`).set("Cookie", admin).send({
+    type: "proposal_sent",
+    artifact: { type: "QUOTE", payload: { totalUsd: 1000, depositUsd: 300 } },
+    action: { kind: "QUOTE_ACCEPTANCE", allowedResponses: ["APPROVE", "REQUEST_CHANGES"] },
+  });
+  expect(proposal.status).toBe(201);
+  expect((await request(app).post(`/v1/admin/supplier-jobs/${jobCode}/transition`).set("Cookie", admin)
+    .send({ action: "CUSTOMER_ACCEPT_QUOTE" })).status).toBe(400);
+
+  const customer = await customerCookie(customerEmail);
+  expect((await request(app).post(`/v1/actions/${proposal.body.actionCode}/respond`).set("Cookie", customer)
+    .send({ response: "APPROVE" })).status).toBe(200);
+  expect((await request(app).post(`/v1/admin/supplier-jobs/${jobCode}/transition`).set("Cookie", admin)
+    .send({ action: "CONFIRM_DEPOSIT" })).status).toBe(400);
+  expect((await request(app).post(`/v1/orders/${orderCode}/shipping-address`).set("Cookie", customer).send({
+    recipientName: "Inventory Owner",
+    phone: "+1 555 010 2000",
+    addressLine1: "1 Verified Way",
+    city: "Los Angeles",
+    region: "CA",
+    postalCode: "90001",
+    country: "US",
+  })).status).toBe(200);
+  expect((await request(app).post(`/v1/orders/${orderCode}/payment-reported`).set("Cookie", customer)
+    .send({ kind: "deposit" })).status).toBe(200);
+  const deposit = await request(app).post(`/v1/admin/orders/${orderCode}/events`).set("Cookie", admin)
+    .send({ type: "deposit_confirmed" });
+  expect(deposit.status).toBe(201);
   expect(await adminOrderByJob(admin, jobCode)).toMatchObject({
     stage: "CAD", waitingOn: "EXTERNAL",
     supplierJob: { workflowState: "DESIGN_REQUIRED", owner: "VENDOR" },
   });
 
+  const cadMedia = await uploadVerifiedSupplierMedia(vendorCookie, jobCode, "CAD", "cad-v1.jpg");
   const cad = await request(app).post(`/v1/vendor/orders/${jobCode}/updates`).set("Cookie", vendorCookie)
-    .send({ type: "CAD", note: "CAD v1", media: [{ name: "cad-v1.jpg", type: "image/jpeg", url: "https://media.example/cad-v1.jpg" }] });
+    .send({ type: "CAD", note: "CAD v1", media: [cadMedia] });
   expect(cad.status).toBe(201);
   const adminList = await request(app).get("/v1/admin/orders").set("Cookie", admin);
   expect(adminList.body.orders.find((order) => order.supplierJob?.jobCode === jobCode)?.supplierJob)
@@ -175,8 +221,9 @@ async function advanceSolitaireToProduction(admin, vendorCookie, jobCode) {
     supplierJob: { workflowState: "DESIGN_CHANGES", owner: "VENDOR" },
   });
 
+  const cadV2Media = await uploadVerifiedSupplierMedia(vendorCookie, jobCode, "CAD", "cad-v2.jpg");
   const cadV2 = await request(app).post(`/v1/vendor/orders/${jobCode}/updates`).set("Cookie", vendorCookie)
-    .send({ type: "CAD", note: "CAD v2 — lower profile", media: [{ name: "cad-v2.jpg", type: "image/jpeg", url: "https://media.example/cad-v2.jpg" }] });
+    .send({ type: "CAD", note: "CAD v2 — lower profile", media: [cadV2Media] });
   expect(cadV2.status).toBe(201);
   const reviewV2 = await request(app).patch(`/v1/admin/supplier-updates/${cadV2.body.update.id}/review`).set("Cookie", admin)
     .send({ status: "approved" });
@@ -425,10 +472,11 @@ describe("one account per vendor", () => {
       .send({ supplierCode: first.supplierCode });
     const jobCode = assignment.body.assignment.jobCode;
 
-    await advanceSolitaireToProduction(admin, first.cookie, jobCode);
+    await advanceSolitaireToProduction(admin, first.cookie, jobCode, orderCode, "inventory-owner@example.com");
 
+    const progressMedia = await uploadVerifiedSupplierMedia(first.cookie, jobCode, "PROGRESS", "progress.jpg");
     const update = await request(app).post(`/v1/vendor/orders/${jobCode}/updates`).set("Cookie", first.cookie)
-      .send({ type: "PROGRESS", note: "Setting complete", media: [{ name: "progress.jpg", url: "https://media.example/progress.jpg" }] });
+      .send({ type: "PROGRESS", note: "Setting complete", media: [progressMedia] });
     expect(update.status).toBe(201);
     expect(update.body.update.version).toBe(1);
     expect(update.body.update.status).toBe("submitted");
@@ -448,8 +496,9 @@ describe("one account per vendor", () => {
     const openQc = await request(app).post(`/v1/admin/supplier-jobs/${jobCode}/transition`).set("Cookie", admin)
       .send({ action: "OPEN_QC" });
     expect(openQc.body.job.workflowState).toBe("QC_REQUIRED");
+    const qcMedia = await uploadVerifiedSupplierMedia(first.cookie, jobCode, "QC", "final-qc.jpg");
     const qc = await request(app).post(`/v1/vendor/orders/${jobCode}/updates`).set("Cookie", first.cookie)
-      .send({ type: "QC", note: "Final QC", media: [{ name: "final-qc.jpg", type: "image/jpeg", url: "https://media.example/final-qc.jpg" }] });
+      .send({ type: "QC", note: "Final QC", media: [qcMedia] });
     expect(qc.status).toBe(201);
     const qcReview = await request(app).patch(`/v1/admin/supplier-updates/${qc.body.update.id}/review`).set("Cookie", admin)
       .send({ status: "approved" });
@@ -471,12 +520,13 @@ describe("one account per vendor", () => {
     });
     expect((await request(app).get(`/v1/vendor/orders/${jobCode}`).set("Cookie", first.cookie)).body.order)
       .toMatchObject({ workflowState: "QC_APPROVED", owner: "VENDOR", action: "SUBMIT_SHIPPING" });
+    const shippingMedia = await uploadVerifiedSupplierMedia(first.cookie, jobCode, "SHIPPING", "shipping-receipt.jpg");
     const shipping = await request(app).post(`/v1/vendor/orders/${jobCode}/updates`).set("Cookie", first.cookie)
       .send({
         type: "SHIPPING",
         note: "Package handed to carrier",
         data: { trackingNumber: "SF-TEST-10001" },
-        media: [{ name: "shipping-receipt.jpg", type: "image/jpeg", url: "https://media.example/shipping-receipt.jpg" }],
+        media: [shippingMedia],
       });
     expect(shipping.status).toBe(201);
     expect(shipping.body.update).toMatchObject({ type: "SHIPPING", status: "approved", data: { trackingNumber: "SF-TEST-10001" } });

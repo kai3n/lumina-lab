@@ -134,7 +134,7 @@ describe("order integrity state machine", () => {
     expect(stored.stage).toBe("OPS_REVIEW");
   });
 
-  it("견적 승인 뒤 주소 없이도 결제를 보고할 수 있고 동시 중복 보고는 한 건만 기록한다", async () => {
+  it("견적 승인과 배송지가 선행되어야 하며 동시 중복 결제 보고는 한 건만 기록한다", async () => {
     const email = "payment@test.com";
     const order = await makeOrder(email);
     await putSettingsValues({ opsDepositRate: 0.5 });
@@ -145,6 +145,9 @@ describe("order integrity state machine", () => {
     await expect(recordOrderEvent(order.orderCode, "deposit_confirmed"))
       .rejects.toMatchObject({ code: "INVALID_ORDER_TRANSITION", status: 409 });
     await respondToAction(proposal.actionCode, email, { response: "APPROVE" });
+    await expect(reportOrderPayment(order.orderCode, email, "deposit"))
+      .rejects.toMatchObject({ code: "ORDER_PREREQUISITE_MISSING", status: 409 });
+    await updateOrderShippingAddress(order.orderCode, email, ADDRESS);
     await expect(recordOrderEvent(order.orderCode, "deposit_confirmed"))
       .rejects.toMatchObject({ code: "PAYMENT_REPORT_REQUIRED", status: 409 });
     await expect(reportOrderPayment(order.orderCode, email, "wire"))
@@ -295,7 +298,7 @@ describe("order integrity state machine", () => {
       .rejects.toMatchObject({ code: "VALIDATION_ERROR", status: 422 });
   });
 
-  it("QC 확인과 잔금 수령 뒤 사진 없이 운송장만으로 배송 완료할 수 있다", async () => {
+  it("QC 미디어·고객 확인·잔금 보고·주소·운송장을 모두 거쳐야 배송 완료된다", async () => {
     const email = "happy@test.com";
     const order = await makeOrder(email);
     await putSettingsValues({ opsDepositRate: 0.4 });
@@ -313,6 +316,9 @@ describe("order integrity state machine", () => {
       .rejects.toMatchObject({ code: "ORDER_PREREQUISITE_MISSING", status: 409 });
     await respondToAction(qc.actionCode, email, { response: "CONFIRM" });
     await recordOrderEvent(order.orderCode, "balance_requested");
+    await expect(recordOrderEvent(order.orderCode, "balance_confirmed"))
+      .rejects.toMatchObject({ code: "PAYMENT_REPORT_REQUIRED", status: 409 });
+    await reportOrderPayment(order.orderCode, email, "balance");
     const balance = await recordOrderEvent(order.orderCode, "balance_confirmed");
     expect(balance.receipt).toMatchObject({ amountUsd: 1500, totalUsd: 2500, remainingUsd: 0 });
 

@@ -33,9 +33,6 @@ const SUBMISSION_WORKFLOW = {
 const ADMIN_WORKFLOW_TRANSITIONS = {
   LOCK_DIAMOND: { from: ["CUSTOMER_STONE_SELECTION"], to: "DIAMOND_LOCKED" },
   OPEN_ESTIMATE: { from: ["DIAMOND_LOCKED"], to: "ESTIMATE_REQUIRED" },
-  PREPARE_QUOTE: { from: ["ESTIMATE_APPROVED"], to: "QUOTE_CUSTOMER_REVIEW" },
-  CUSTOMER_ACCEPT_QUOTE: { from: ["QUOTE_CUSTOMER_REVIEW"], to: "DEPOSIT_REQUIRED" },
-  CONFIRM_DEPOSIT: { from: ["DEPOSIT_REQUIRED"], to: "DESIGN_REQUIRED" },
   OPEN_QC: { from: ["IN_PRODUCTION"], to: "QC_REQUIRED" },
   APPROVE: { from: ["CUSTOMER_CAD_REVIEW"], to: "DESIGN_APPROVED" },
   REQUEST_CHANGES: { from: ["CUSTOMER_CAD_REVIEW"], to: "DESIGN_CHANGES" },
@@ -77,6 +74,42 @@ function mediaAssetReference(row) {
 async function nextPublicCode(client, sequence, prefix) {
   const { rows } = await client.query(`select nextval('${sequence}') as value`);
   return `${prefix}-${String(rows[0].value).padStart(6, "0")}`;
+}
+
+async function lockMutableSupplierOrder(client, { jobCode = null, supplierId = null, orderId = null } = {}) {
+  const params = [];
+  const filters = ["a.status='active'"];
+  if (jobCode != null) {
+    params.push(jobCode);
+    filters.push(`a.job_code=$${params.length}`);
+  }
+  if (supplierId != null) {
+    params.push(supplierId);
+    filters.push(`a.supplier_id=$${params.length}`);
+  }
+  if (orderId != null) {
+    params.push(orderId);
+    filters.push(`a.order_id=$${params.length}`);
+  }
+  const { rows } = await client.query(`
+    select o.id, o.stage, exists (
+      select 1 from customer_timeline_events e
+      where e.order_id=o.id and e.payload->>'type'='cancel_requested'
+    ) as cancellation_pending
+    from customer_orders o
+    join supplier_order_assignments a on a.order_id=o.id
+    where ${filters.join(" and ")}
+    for update of o
+  `, params);
+  const order = rows[0];
+  if (!order) return null;
+  if (order.cancellation_pending) {
+    throw new ApiError("CANCELLATION_PENDING", 409, "the cancellation request must be resolved before advancing supplier work");
+  }
+  if (order.stage === "CANCELLED") {
+    throw new ApiError("INVALID_SUPPLIER_WORKFLOW_TRANSITION", 409, "cancelled orders cannot advance supplier work");
+  }
+  return order;
 }
 
 function publishedSupplierMedia(value) {
@@ -175,15 +208,21 @@ function supplierMedia(supplierId, value) {
 async function resolvedSupplierMedia(client, supplierId, orderId, assignmentId, updateType, value) {
   const requested = supplierMedia(supplierId, value);
   return Promise.all(requested.map(async (item) => {
-    if (!item.assetId) return item;
+    // Legacy supplier_updates may still contain a URL or raw object key and
+    // remain readable through readableSupplierMedia(). New submissions must
+    // reference a server-registered upload that was verified for this exact
+    // supplier job and purpose.
+    if (!item.assetId) {
+      throw new ApiError("VALIDATION_ERROR", 400, "verified media asset id required");
+    }
     const { rows } = await client.query(`
       select * from media_assets
       where media_code=$1 and owner_supplier_id=$2 and order_id=$3
-        and supplier_assignment_id=$4 and status='READY'
+        and supplier_assignment_id=$4 and status='READY' and verified_at is not null
     `, [item.assetId, supplierId, orderId, assignmentId]);
     const asset = rows[0];
     if (!asset) throw new ApiError("MEDIA_NOT_READY", 409);
-    if (asset.purpose && asset.purpose !== updateType) throw new ApiError("MEDIA_PURPOSE_MISMATCH", 409);
+    if (asset.purpose !== updateType) throw new ApiError("MEDIA_PURPOSE_MISMATCH", 409);
     return mediaAssetReference(asset);
   }));
 }
@@ -554,9 +593,18 @@ async function jobCodeForAssignment(client, supplierId, orderId, orderCode) {
 export async function assignSupplierOrder({ supplierCode, orderCode, dueAt }, adminId) {
   return withTransaction(async (client) => {
     const supplier = (await client.query("select * from suppliers where supplier_code=$1 and status='active'", [supplierCode])).rows[0];
-    const order = (await client.query("select * from customer_orders where order_code=$1 for update", [orderCode])).rows[0];
+    const order = (await client.query(`
+      select o.*, exists (
+        select 1 from customer_timeline_events e
+        where e.order_id=o.id and e.payload->>'type'='cancel_requested'
+      ) as cancellation_pending
+      from customer_orders o where o.order_code=$1 for update
+    `, [orderCode])).rows[0];
     if (!supplier) throw new ApiError("SUPPLIER_NOT_FOUND", 404);
     if (!order) throw new ApiError("ORDER_NOT_FOUND", 404);
+    if (order.stage === "CANCELLED" || order.cancellation_pending) {
+      throw new ApiError("INVALID_SUPPLIER_WORKFLOW_TRANSITION", 409, "cancelled or pending-cancellation orders cannot be assigned");
+    }
     await client.query(`
       update supplier_order_assignments
       set status='revoked', revoked_at=now()
@@ -588,39 +636,44 @@ export async function createSupplierMediaUpload(supplierId, jobCode, payload = {
   const contentType = String(payload.contentType || "").toLowerCase();
   const fileName = String(payload.fileName || "").trim().slice(0, 255);
   if (!upload || !contentType || !fileName) throw new ApiError("VALIDATION_ERROR", 400);
-  const assignment = (await query(`
-    select a.id, a.order_id, a.workflow_state
-    from supplier_order_assignments a
-    where a.supplier_id=$1 and a.job_code=$2 and a.status='active'
-  `, [supplierId, jobCode])).rows[0];
-  if (!assignment) throw new ApiError("ORDER_ACCESS_DENIED", 403);
-  if (!upload.states.includes(assignment.workflow_state)) {
-    throw new ApiError("INVALID_SUPPLIER_WORKFLOW_TRANSITION", 409);
-  }
-  const signed = await createUploadUrl({
-    scope: upload.scope,
-    contentType,
-    size: payload.size,
-    origin: options.origin,
-    keyPrefix: `vendor/${supplierId}/${String(jobCode).toLowerCase()}`,
-    provider: options.provider,
-    videoMaxBytes: options.videoMaxBytes,
-    expiresIn: options.expiresIn,
+  return withTransaction(async (client) => {
+    const order = await lockMutableSupplierOrder(client, { supplierId, jobCode });
+    if (!order) throw new ApiError("ORDER_ACCESS_DENIED", 403);
+    const assignment = (await client.query(`
+      select a.id, a.order_id, a.workflow_state
+      from supplier_order_assignments a
+      where a.supplier_id=$1 and a.job_code=$2 and a.status='active'
+      for update
+    `, [supplierId, jobCode])).rows[0];
+    if (!assignment) throw new ApiError("ORDER_ACCESS_DENIED", 403);
+    if (!upload.states.includes(assignment.workflow_state)) {
+      throw new ApiError("INVALID_SUPPLIER_WORKFLOW_TRANSITION", 409);
+    }
+    const signed = await createUploadUrl({
+      scope: upload.scope,
+      contentType,
+      size: payload.size,
+      origin: options.origin,
+      keyPrefix: `vendor/${supplierId}/${String(jobCode).toLowerCase()}`,
+      provider: options.provider,
+      videoMaxBytes: options.videoMaxBytes,
+      expiresIn: options.expiresIn,
+    });
+    const mediaCode = `MED-${String((await client.query("select nextval('media_code_seq') as n")).rows[0].n).padStart(6, "0")}`;
+    await client.query(`
+      insert into media_assets
+        (media_code, owner_supplier_id, order_id, supplier_assignment_id, status,
+         kind, mime_type, byte_size, storage_key, provider, purpose, public_payload)
+      values ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8,$9,$10,$11)
+    `, [mediaCode, supplierId, assignment.order_id, assignment.id, mediaKind(contentType), contentType,
+      Number(payload.size), signed.key, signed.provider, purpose,
+      { fileName, ...(signed.provider === "local" ? { localUrl: signed.publicUrl } : {}) }]);
+    await client.query(`
+      insert into audit_log (actor_type, actor_ref, entity_type, entity_ref, action, after_json)
+      values ('supplier', $1, 'media_asset', $2, 'upload_created', $3)
+    `, [String(supplierId), mediaCode, { jobCode, purpose, storageKey: signed.key }]);
+    return { ...signed, mediaId: mediaCode, purpose };
   });
-  const mediaCode = `MED-${String((await query("select nextval('media_code_seq') as n")).rows[0].n).padStart(6, "0")}`;
-  await query(`
-    insert into media_assets
-      (media_code, owner_supplier_id, order_id, supplier_assignment_id, status,
-       kind, mime_type, byte_size, storage_key, provider, purpose, public_payload)
-    values ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8,$9,$10,$11)
-  `, [mediaCode, supplierId, assignment.order_id, assignment.id, mediaKind(contentType), contentType,
-    Number(payload.size), signed.key, signed.provider, purpose,
-    { fileName, ...(signed.provider === "local" ? { localUrl: signed.publicUrl } : {}) }]);
-  await query(`
-    insert into audit_log (actor_type, actor_ref, entity_type, entity_ref, action, after_json)
-    values ('supplier', $1, 'media_asset', $2, 'upload_created', $3)
-  `, [String(supplierId), mediaCode, { jobCode, purpose, storageKey: signed.key }]);
-  return { ...signed, mediaId: mediaCode, purpose };
 }
 
 export async function completeSupplierMediaUpload(supplierId, jobCode, mediaCode) {
@@ -633,22 +686,48 @@ export async function completeSupplierMediaUpload(supplierId, jobCode, mediaCode
   `, [mediaCode, supplierId, jobCode]);
   const asset = rows[0];
   if (!asset) throw new ApiError("MEDIA_NOT_FOUND", 404);
-  if (asset.status === "READY") return mediaAssetReference(asset);
-  if (asset.status !== "PENDING" && asset.status !== "UPLOADED") throw new ApiError("MEDIA_NOT_READY", 409);
-  const inspected = await inspectStoredMedia({ key: asset.storage_key, provider: asset.provider });
-  if (inspected.byteSize !== Number(asset.byte_size) || inspected.contentType !== asset.mime_type) {
-    await query("update media_assets set status='REJECTED', updated_at=now() where id=$1", [asset.id]);
-    throw new ApiError("MEDIA_UPLOAD_MISMATCH", 409);
+  if (asset.status !== "READY" && asset.status !== "PENDING" && asset.status !== "UPLOADED") {
+    throw new ApiError("MEDIA_NOT_READY", 409);
   }
-  const updated = (await query(`
-    update media_assets set status='READY', etag=$2, verified_at=now(), updated_at=now()
-    where id=$1 returning *
-  `, [asset.id, inspected.etag])).rows[0];
-  await query(`
-    insert into audit_log (actor_type, actor_ref, entity_type, entity_ref, action, after_json)
-    values ('supplier', $1, 'media_asset', $2, 'upload_verified', $3)
-  `, [String(supplierId), mediaCode, { jobCode, purpose: updated.purpose, etag: updated.etag }]);
-  return mediaAssetReference(updated);
+  // Storage inspection may require a remote HEAD and therefore stays outside
+  // the DB transaction. The order/assignment is locked and revalidated below
+  // before any READY state is committed.
+  const inspected = asset.status === "READY"
+    ? null
+    : await inspectStoredMedia({ key: asset.storage_key, provider: asset.provider });
+  const outcome = await withTransaction(async (client) => {
+    const order = await lockMutableSupplierOrder(client, { supplierId, jobCode });
+    if (!order) throw new ApiError("MEDIA_NOT_FOUND", 404);
+    const current = (await client.query(`
+      select m.*
+      from media_assets m
+      join supplier_order_assignments a on a.id=m.supplier_assignment_id
+      where m.media_code=$1 and m.owner_supplier_id=$2 and a.job_code=$3
+        and a.supplier_id=$2 and a.status='active'
+      for update of a, m
+    `, [mediaCode, supplierId, jobCode])).rows[0];
+    if (!current) throw new ApiError("MEDIA_NOT_FOUND", 404);
+    if (current.status === "READY") return { media: mediaAssetReference(current) };
+    if (current.status !== "PENDING" && current.status !== "UPLOADED") {
+      throw new ApiError("MEDIA_NOT_READY", 409);
+    }
+    if (!inspected) throw new ApiError("MEDIA_NOT_READY", 409);
+    if (inspected.byteSize !== Number(current.byte_size) || inspected.contentType !== current.mime_type) {
+      await client.query("update media_assets set status='REJECTED', updated_at=now() where id=$1", [current.id]);
+      return { error: new ApiError("MEDIA_UPLOAD_MISMATCH", 409) };
+    }
+    const updated = (await client.query(`
+      update media_assets set status='READY', etag=$2, verified_at=now(), updated_at=now()
+      where id=$1 returning *
+    `, [current.id, inspected.etag])).rows[0];
+    await client.query(`
+      insert into audit_log (actor_type, actor_ref, entity_type, entity_ref, action, after_json)
+      values ('supplier', $1, 'media_asset', $2, 'upload_verified', $3)
+    `, [String(supplierId), mediaCode, { jobCode, purpose: updated.purpose, etag: updated.etag }]);
+    return { media: mediaAssetReference(updated) };
+  });
+  if (outcome.error) throw outcome.error;
+  return outcome.media;
 }
 
 const ORDER_SELECT = `
@@ -752,10 +831,12 @@ export async function addSupplierUpdate(supplierId, jobCode, payload = {}) {
   const data = validateStructuredUpdate(type, payload.data);
   if (!UPDATE_TYPES.has(type) || (note && note.length > 2000)) throw new ApiError("VALIDATION_ERROR", 400);
   return withTransaction(async (client) => {
+    const mutableOrder = await lockMutableSupplierOrder(client, { supplierId, jobCode });
+    if (!mutableOrder) throw new ApiError("ORDER_ACCESS_DENIED", 403);
     const access = await client.query(`
-      select o.id, a.id as assignment_id, a.workflow_state
-      from customer_orders o join supplier_order_assignments a on a.order_id=o.id
-      where a.job_code=$1 and a.supplier_id=$2 and a.status='active' for update of a
+      select a.order_id as id, a.id as assignment_id, a.workflow_state
+      from supplier_order_assignments a
+      where a.job_code=$1 and a.supplier_id=$2 and a.status='active' for update
     `, [jobCode, supplierId]);
     if (!access.rows[0]) throw new ApiError("ORDER_ACCESS_DENIED", 403);
     const orderId = access.rows[0].id;
@@ -815,6 +896,8 @@ export async function addSupplierUpdate(supplierId, jobCode, payload = {}) {
 export async function transitionSupplierWorkflow(supplierId, jobCode, action) {
   const normalized = action === "ACKNOWLEDGE" ? "ACCEPT" : String(action || "").toUpperCase();
   return withTransaction(async (client) => {
+    const mutableOrder = await lockMutableSupplierOrder(client, { supplierId, jobCode });
+    if (!mutableOrder) throw new ApiError("ORDER_ACCESS_DENIED", 403);
     const before = (await client.query(`
       select a.*, i.product_line, o.order_code, o.stage as order_stage,
              c.email as customer_email, c.locale as customer_locale
@@ -822,7 +905,7 @@ export async function transitionSupplierWorkflow(supplierId, jobCode, action) {
       join customer_orders o on o.id=a.order_id
       join customers c on c.id=o.customer_id
       join customer_intakes i on i.id=o.intake_id
-      where a.supplier_id=$1 and a.job_code=$2 and a.status='active' for update of a, o
+      where a.supplier_id=$1 and a.job_code=$2 and a.status='active' for update of a
     `, [supplierId, jobCode])).rows[0];
     if (!before) throw new ApiError("ORDER_ACCESS_DENIED", 403);
     const transition = normalized === "ACCEPT"
@@ -869,6 +952,11 @@ export async function reviewSupplierUpdate(updateId, status, reviewNote, adminId
     if (!VERSIONED_UPDATE_TYPES.has(before.update_type) || before.review_status !== "submitted") {
       throw new ApiError("SUPPLIER_UPDATE_NOT_REVIEWABLE", 409);
     }
+    const mutableOrder = await lockMutableSupplierOrder(client, {
+      supplierId: before.supplier_id,
+      orderId: before.order_id,
+    });
+    if (!mutableOrder) throw new ApiError("INVALID_SUPPLIER_WORKFLOW_TRANSITION", 409);
     const expectedReviewState = {
       STONE: "CANDIDATES_REVIEW",
       ESTIMATE: "ESTIMATE_REVIEW",
@@ -882,7 +970,7 @@ export async function reviewSupplierUpdate(updateId, status, reviewNote, adminId
       join customer_orders o on o.id=a.order_id
       join customers c on c.id=o.customer_id
       where a.supplier_id=$1 and a.order_id=$2 and a.status='active'
-      for update of a, o
+      for update of a
     `, [before.supplier_id, before.order_id])).rows[0];
     if (!assignment || (expectedReviewState && assignment.workflow_state !== expectedReviewState)) {
       throw new ApiError("INVALID_SUPPLIER_WORKFLOW_TRANSITION", 409);
@@ -942,6 +1030,8 @@ export async function transitionSupplierJobByAdmin(jobCode, action, payload = {}
   const transition = ADMIN_WORKFLOW_TRANSITIONS[normalized];
   if (!transition) throw new ApiError("VALIDATION_ERROR", 400);
   return withTransaction(async (client) => {
+    const mutableOrder = await lockMutableSupplierOrder(client, { jobCode });
+    if (!mutableOrder) throw new ApiError("SUPPLIER_JOB_NOT_FOUND", 404);
     const before = (await client.query(`
       select * from supplier_order_assignments
       where job_code=$1 and status='active' for update
@@ -1057,6 +1147,8 @@ export async function transitionSupplierJobByAdmin(jobCode, action, payload = {}
 
 export async function completeSupplierJob(jobCode, adminId) {
   return withTransaction(async (client) => {
+    const mutableOrder = await lockMutableSupplierOrder(client, { jobCode });
+    if (!mutableOrder) throw new ApiError("SUPPLIER_JOB_NOT_FOUND", 404);
     const before = (await client.query("select * from supplier_order_assignments where job_code=$1 and status='active' for update", [jobCode])).rows[0];
     if (!before) throw new ApiError("SUPPLIER_JOB_NOT_FOUND", 404);
     if (before.workflow_state !== "HANDOFF_READY") throw new ApiError("INVALID_SUPPLIER_WORKFLOW_TRANSITION", 409);

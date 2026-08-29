@@ -4,9 +4,11 @@ import { closePool, query } from "../server/db.js";
 import { getAdminOrder } from "../server/adminRepository.js";
 import {
   createDraftIntake,
-  getCustomerOrder,
+  recordOrderEvent,
+  reportOrderPayment,
   respondToAction,
   submitIntake,
+  updateOrderShippingAddress,
 } from "../server/customerRepository.js";
 import {
   addSupplierUpdate,
@@ -30,6 +32,29 @@ const customerEmail = `codex-order-e2e-${token}@belovediamond.test`;
 const supplierEmail = `codex-vendor-e2e-${token}@belovediamond.test`;
 const refs = new Set();
 let supplierId = null;
+
+async function verifiedMediaFixture(ownerSupplierId, jobCode, purpose, fileName, mimeType = "image/jpeg") {
+  const assignment = (await query(`
+    select id, order_id from supplier_order_assignments
+    where supplier_id=$1 and job_code=$2 and status='active'
+  `, [ownerSupplierId, jobCode])).rows[0];
+  assert.ok(assignment, `active assignment required for ${purpose} media`);
+  const sequence = (await query("select nextval('media_code_seq') as n")).rows[0].n;
+  const mediaCode = `MED-${String(sequence).padStart(6, "0")}`;
+  const ext = mimeType === "video/mp4" ? "mp4" : "jpg";
+  const scope = new Set(["QC", "SHIPPING"]).has(purpose) ? "qc" : purpose === "CAD" ? "cad" : "proposal";
+  const storageKey = `vendor/${ownerSupplierId}/${jobCode.toLowerCase()}/${scope}/${new Date().toISOString().slice(0, 10)}/${randomBytes(12).toString("hex")}.${ext}`;
+  await query(`
+    insert into media_assets
+      (media_code, owner_supplier_id, order_id, supplier_assignment_id, status,
+       kind, mime_type, byte_size, storage_key, provider, purpose, verified_at, public_payload)
+    values ($1,$2,$3,$4,'READY',$5,$6,1,$7,'local',$8,now(),$9)
+  `, [mediaCode, ownerSupplierId, assignment.order_id, assignment.id,
+    mimeType.startsWith("video/") ? "video" : "image", mimeType, storageKey, purpose,
+    { fileName, localUrl: `https://media.invalid/${token}/${encodeURIComponent(fileName)}` }]);
+  refs.add(mediaCode);
+  return { assetId: mediaCode };
+}
 
 async function cleanup() {
   await query("delete from customer_orders where customer_id in (select id from customers where email=$1)", [customerEmail]);
@@ -102,21 +127,44 @@ try {
   });
   refs.add(String(estimate.id));
   await reviewSupplierUpdate(estimate.id, "approved", null, null);
-  await transitionSupplierJobByAdmin(assignment.jobCode, "PREPARE_QUOTE", {}, null);
-  await transitionSupplierJobByAdmin(assignment.jobCode, "CUSTOMER_ACCEPT_QUOTE", {}, null);
-  await transitionSupplierJobByAdmin(assignment.jobCode, "CONFIRM_DEPOSIT", {}, null);
 
+  const proposal = await recordOrderEvent(order.orderCode, "proposal_sent", {}, {
+    artifact: { type: "QUOTE", payload: { totalUsd: 2_000, depositUsd: 600 } },
+    action: { kind: "QUOTE_ACCEPTANCE", allowedResponses: ["APPROVE", "REQUEST_CHANGES"] },
+  });
+  assert.equal((await getAdminSupplierOrderContext(order.orderCode)).workflowState, "QUOTE_CUSTOMER_REVIEW");
+  assert.equal((await respondToAction(proposal.actionCode, customerEmail, { response: "APPROVE" })).supplierWorkflowState, "DEPOSIT_REQUIRED");
+  await updateOrderShippingAddress(order.orderCode, customerEmail, {
+    recipientName: "Scoped Order E2E",
+    phone: "+1 213 555 0199",
+    addressLine1: "550 S Hill St",
+    addressLine2: "",
+    city: "Los Angeles",
+    region: "CA",
+    postalCode: "90013",
+    country: "US",
+    notes: "",
+  });
+  await reportOrderPayment(order.orderCode, customerEmail, "deposit");
+  await recordOrderEvent(order.orderCode, "deposit_confirmed");
+  assert.equal((await getAdminSupplierOrderContext(order.orderCode)).workflowState, "DESIGN_REQUIRED");
+
+  const cadMedia = await verifiedMediaFixture(supplier.id, assignment.jobCode, "CAD", "cad.jpg");
   const cad = await addSupplierUpdate(supplier.id, assignment.jobCode, {
     type: "CAD",
     note: "Scoped CAD V1",
-    media: [{ name: "cad.jpg", type: "image/jpeg", url: "https://media.example/cad.jpg" }],
+    media: [cadMedia],
   });
   refs.add(String(cad.id));
   const cadReview = await reviewSupplierUpdate(cad.id, "approved", null, null);
   assert.equal(cadReview.workflowState, "CUSTOMER_CAD_REVIEW");
-  const customerCad = await getCustomerOrder(order.orderCode, customerEmail);
-  assert.equal(customerCad.nextAction?.kind, "CAD_REVIEW");
-  assert.equal(customerCad.publishedArtifacts[0]?.type, "CAD");
+  assert.equal((await query(`
+    select kind from customer_actions where action_code=$1
+  `, [cadReview.customerActionCode])).rows[0]?.kind, "CAD_REVIEW");
+  assert.equal((await query(`
+    select type from published_artifacts where order_id=(select id from customer_orders where order_code=$1)
+    order by published_at desc, id desc limit 1
+  `, [order.orderCode])).rows[0]?.type, "CAD");
   assert.equal((await respondToAction(cadReview.customerActionCode, customerEmail, { response: "APPROVE" })).supplierWorkflowState, "DESIGN_APPROVED");
 
   assert.equal((await transitionSupplierWorkflow(supplier.id, assignment.jobCode, "CONFIRM_PRODUCTION")).workflowState, "IN_PRODUCTION");
@@ -134,16 +182,24 @@ try {
   assert.equal((await reviewSupplierUpdate(progress2.id, "approved", null, null)).workflowState, "IN_PRODUCTION");
   await transitionSupplierJobByAdmin(assignment.jobCode, "OPEN_QC", {}, null);
 
+  const qcMedia = await verifiedMediaFixture(supplier.id, assignment.jobCode, "QC", "qc.mp4", "video/mp4");
   const qc = await addSupplierUpdate(supplier.id, assignment.jobCode, {
     type: "QC",
     note: "Scoped final QC",
-    media: [{ name: "qc.mp4", type: "video/mp4", url: "https://media.example/qc.mp4" }],
+    media: [qcMedia],
   });
   refs.add(String(qc.id));
   const qcReview = await reviewSupplierUpdate(qc.id, "approved", null, null);
   assert.equal(qcReview.workflowState, "CUSTOMER_QC_REVIEW");
   assert.equal((await respondToAction(qcReview.customerActionCode, customerEmail, { response: "CONFIRM" })).supplierWorkflowState, "QC_APPROVED");
-  assert.equal((await transitionSupplierWorkflow(supplier.id, assignment.jobCode, "CONFIRM_HANDOFF")).workflowState, "HANDOFF_READY");
+  const shippingMedia = await verifiedMediaFixture(supplier.id, assignment.jobCode, "SHIPPING", "shipping.jpg");
+  assert.equal((await addSupplierUpdate(supplier.id, assignment.jobCode, {
+    type: "SHIPPING",
+    note: "Scoped handoff",
+    data: { trackingNumber: `SCOPED-${token}` },
+    media: [shippingMedia],
+  })).status, "approved");
+  assert.equal((await getAdminSupplierOrderContext(order.orderCode)).workflowState, "HANDOFF_READY");
   assert.deepEqual(
     (({ stage, waitingOn }) => ({ stage, waitingOn }))(await getAdminOrder(order.orderCode)),
     { stage: "FINAL_QC", waitingOn: "BELOVEDIAMOND" },
