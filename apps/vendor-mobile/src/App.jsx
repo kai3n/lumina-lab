@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle, ArrowLeft, BadgeCheck, Bell, CalendarClock, Camera, Check, ChevronRight, CircleDollarSign,
+  AlertCircle, ArrowLeft, BadgeCheck, Bell, CalendarClock, Camera, Check, ChevronDown, ChevronRight, CircleDollarSign,
   ClipboardCheck, Clock3, FileText, Gem, Home, ImagePlus, Layers3, LogOut, Menu,
   MessageCircle, MoreHorizontal, PackageCheck, Plus, Search, Send, Settings, ShieldCheck,
   RotateCcw, Sparkles, Truck, UploadCloud, UserRound, Video, X, Zap,
@@ -9,6 +9,7 @@ import { DEMO_MODE, uploadVendorMedia, vendorApi } from "./api.js";
 import { inventory as initialInventory, orders as initialOrders } from "./mock.js";
 import { LOCALES, useI18n } from "./i18n.jsx";
 import { vendorBrand } from "./brand.js";
+import { mergeSelectedFiles } from "./fileSelection.js";
 import { eventForUpdate, fallbackWorkflowState, operationsActions, transitionWorkflow, workflowTimeline, workflowView } from "./workflow.js";
 
 const STAGES = {
@@ -22,7 +23,7 @@ const TASKS = {
   CAD: { label: "CAD / 设计方案", action: "上传 CAD 版本", requirements: ["正面、侧面与背面视图", "标注关键尺寸", "说明本版本修改内容"] },
   PROGRESS: { label: "制作进度", action: "上传制作进度", requirements: ["清晰展示当前完成状态", "说明已完成与下一步", "如有延期风险请在说明中写明"] },
   QC: { label: "成品终检", action: "上传终检证据", requirements: ["正面、侧面、背面照片或视频", "刻字、爪位、连接点等细节", "证书/腰码与实际重量凭证"] },
-  SHIPPING: { label: "交付与物流", action: "上传物流凭证", requirements: ["运单或交接凭证", "物流单号与发货时间", "包装完成照片"] },
+  SHIPPING: { label: "寄件与物流凭证", action: "确认包裹已寄出", requirements: ["填写寄往 BeloveD 的物流单号", "上传至少一张寄件面单或收据照片", "确认包装完成后再提交"] },
 };
 
 const UPDATE_LABELS = {
@@ -33,6 +34,14 @@ const UPDATE_LABELS = {
 const REVIEW_LABELS = {
   submitted: "待订单团队审核", approved: "审核已通过", changes_requested: "需要修改", superseded: "历史版本",
 };
+
+const WORKFLOW_PHASES = [
+  { id: "intake", label: "接单", title: "接单与选钻", from: 0, to: 4, updateTypes: ["STONE"] },
+  { id: "quote", label: "报价", title: "报价与付款", from: 4, to: 8, updateTypes: ["ESTIMATE"] },
+  { id: "cad", label: "CAD", title: "CAD 与开工", from: 8, to: 12, updateTypes: ["CAD"] },
+  { id: "production", label: "制作", title: "制作与质检", from: 12, to: 15, updateTypes: ["PROGRESS", "QC"] },
+  { id: "delivery", label: "交付", title: "包装与交付", from: 15, to: 18, updateTypes: ["SHIPPING"] },
+];
 
 function dateLabel(value) {
   if (!value) return "待确认";
@@ -150,7 +159,7 @@ function rebuildDemoOrder(order, workflowState, updates, acceptedAt = order.acce
 
 function applyDemoUpdate(order, rawUpdate) {
   const update = normalizedUpdate(rawUpdate);
-  const versioned = TASKS[update.type];
+  const versioned = TASKS[update.type] && update.type !== "PROGRESS";
   const older = order.updates.map(item => versioned && item.type === update.type && item.status !== "superseded" ? { ...item, status: "superseded" } : item);
   const updates = [update, ...older];
   const event = update.type === "ACKNOWLEDGE" ? "ACCEPT" : eventForUpdate(update.type);
@@ -300,6 +309,93 @@ function DetailSection({ title, icon: Icon, children, action }) {
   return <section className="detail-section"><div className="detail-section-title"><h2><Icon size={18} />{title}</h2>{action}</div>{children}</section>;
 }
 
+function ProductionTimeline({ order, role, canUpload, onUpload }) {
+  const { t } = useI18n();
+  const phases = useMemo(() => WORKFLOW_PHASES.map((phase) => {
+    const steps = order.steps.slice(phase.from, phase.to);
+    const state = steps.some((step) => step.current) ? "current" : steps.length > 0 && steps.every((step) => step.done) ? "done" : "next";
+    return { ...phase, steps, state };
+  }), [order.steps]);
+  const activeId = phases.find((phase) => phase.state === "current")?.id
+    || [...phases].reverse().find((phase) => phase.state === "done")?.id
+    || phases[0].id;
+  const [selectedId, setSelectedId] = useState(activeId);
+  const [expanded, setExpanded] = useState(true);
+
+  useEffect(() => {
+    setSelectedId(activeId);
+    setExpanded(true);
+  }, [order.code, activeId]);
+
+  const selected = phases.find((phase) => phase.id === selectedId) || phases[0];
+  const phaseUpdates = (order.updates || []).filter((update) => selected.updateTypes.includes(update.type) && update.status !== "superseded");
+  const media = phaseUpdates.flatMap((update) => (update.media || []).map((file) => ({ ...file, update })));
+  const uploadAllowed = role === "vendor" && canUpload && selected.updateTypes.includes(order.task?.type);
+  const statusText = selected.state === "done" ? "已完成" : selected.state === "current" ? "进行中" : "待开始";
+
+  const selectPhase = (phaseId) => {
+    if (phaseId === selectedId) setExpanded((value) => !value);
+    else {
+      setSelectedId(phaseId);
+      setExpanded(true);
+    }
+  };
+
+  return <div className="workflow-stage-view">
+    <nav className="workflow-stage-rail" aria-label={t("订单制作阶段")}>
+      <span className="workflow-stage-line" aria-hidden="true" />
+      {phases.map((phase, index) => <button
+        type="button"
+        key={phase.id}
+        className={`${phase.state} ${phase.id === selectedId ? "selected" : ""}`}
+        onClick={() => selectPhase(phase.id)}
+        aria-pressed={phase.id === selectedId}
+      >
+        <span className="workflow-stage-node">{phase.state === "done" ? <Check size={13} /> : phase.state === "current" ? <i /> : index + 1}</span>
+        <small>{t(phase.label)}</small>
+      </button>)}
+    </nav>
+
+    <button type="button" className="workflow-stage-summary" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+      <span className="workflow-stage-number">0{phases.findIndex((phase) => phase.id === selected.id) + 1}</span>
+      <span><small>{t(`阶段 ${phases.findIndex((phase) => phase.id === selected.id) + 1}`)}</small><strong>{t(selected.title)}</strong></span>
+      <em className={selected.state}>{t(statusText)}</em>
+      <ChevronDown size={17} className={expanded ? "open" : ""} />
+    </button>
+
+    {expanded && <div className="workflow-stage-panel">
+      <div className="workflow-substeps">
+        {selected.steps.map((step, index) => <div className={step.done ? "done" : step.current ? "current" : "next"} key={step.title}>
+          <span className="workflow-substep-track">
+            <span className="workflow-substep-node">{step.done ? <Check size={10} /> : step.current ? <i /> : null}</span>
+            {index < selected.steps.length - 1 && <span className="workflow-substep-line" />}
+          </span>
+          <p><strong>{t(step.title)}</strong><small>{t(step.meta)}</small></p>
+          {step.current && uploadAllowed && <button type="button" onClick={() => onUpload(order, order.task.type)}>{t("处理")}</button>}
+        </div>)}
+      </div>
+
+      <div className="workflow-media-heading"><strong>{t("阶段资料")}</strong><span>{t(`${media.length} 项`)}</span></div>
+      <div className="workflow-media-row">
+        {media.map((file, index) => {
+          const url = file.url || file.publicUrl;
+          const isVideo = /\.(mp4|mov|webm)(\?|$)/i.test(url || "") || String(file.type || "").startsWith("video/");
+          return <a href={url} target="_blank" rel="noreferrer" key={`${url || file.name}-${index}`}>
+            <span className="workflow-media-preview">{url ? isVideo ? <video src={url} muted preload="metadata" /> : <img src={url} alt={file.name || t("阶段资料")} loading="lazy" /> : <FileText size={20} />}</span>
+            <span><strong>{file.name || t(UPDATE_LABELS[file.update.type])}</strong><small>{t(REVIEW_LABELS[file.update.status] || file.update.status)}</small></span>
+          </a>;
+        })}
+        {uploadAllowed && <button type="button" className="workflow-media-add" onClick={() => onUpload(order, order.task.type)}>
+          <span><ImagePlus size={20} /></span><strong>{t("添加资料")}</strong><small>{t("照片 / 视频")}</small>
+        </button>}
+        {!media.length && !uploadAllowed && <div className="workflow-media-empty"><FileText size={18} /><span>{t(selected.state === "next" ? "此阶段尚未开始" : "此阶段暂无文件")}</span></div>}
+      </div>
+
+      {selected.state === "current" && <div className="workflow-stage-tip"><ShieldCheck size={16} /><p><strong>{t("供货商提示")}</strong>{t(order.task?.requirements?.[0] || order.waiting)}</p></div>}
+    </div>}
+  </div>;
+}
+
 function MediaEvidence({ item }) {
   const { t } = useI18n();
   const media = item.media || [];
@@ -329,6 +425,9 @@ function MediaEvidence({ item }) {
       <span><small>{t("材料费")}</small><strong>{item.data.currency || "CNY"} {item.data.materialCost || "—"}</strong></span>
       <span><small>{t("生产周期")}</small><strong>{item.data.leadTimeDays || "—"} {t("天")}</strong></span>
       <span className="wide"><small>{t("估算假设")}</small><strong>{item.data.assumptions || "—"}</strong></span>
+    </div>}
+    {item.type === "SHIPPING" && <div className="evidence-data">
+      <span className="wide"><small>{t("物流单号")}</small><strong>{item.data?.trackingNumber || "—"}</strong></span>
     </div>}
     {item.note && <p>{item.note}</p>}
     {item.reviewNote && <div className="review-note"><AlertCircle size={14} /><span><strong>{t("订单团队反馈")}</strong>{item.reviewNote}</span></div>}
@@ -393,7 +492,7 @@ function OrderDetail({ order, role, onRoleChange, onBack, onUpload, onSaveNote, 
 
       <DetailSection title={t("制作进度")} icon={Layers3} action={role === "vendor" ? <button className="text-button" onClick={() => setShowComposer(v => !v)}>{t("添加记录")}</button> : null}>
         {showComposer && <div className="note-composer"><textarea autoFocus value={note} onChange={e => setNote(e.target.value)} placeholder={t("例如：戒臂已抛光，明天完成镶石…")} /><div><button onClick={() => setShowComposer(false)}>{t("取消")}</button><button className="primary-mini" onClick={submitNote}><Send size={14} /> {t("保存")}</button></div></div>}
-        <div className="timeline">{order.steps.map((step, index) => <div className={step.done ? "done" : step.current ? "current" : ""} key={step.title}><span className="timeline-node">{step.done ? <Check size={13} /> : index + 1}</span><p><strong>{t(step.title)}</strong><small>{t(step.meta)}</small></p></div>)}</div>
+        <ProductionTimeline order={order} role={role} canUpload={canUpload} onUpload={onUpload} />
       </DetailSection>
 
       <DetailSection title={t("订单团队反馈")} icon={MessageCircle}>
@@ -475,6 +574,8 @@ function UploadSheet({ order, kind, onClose, onDone }) {
     ? { candidateCount: "10", batchValidUntil: "", temporaryHoldUntil: "", igiNumbers: "", availabilityConfirmed: false }
     : kind === "ESTIMATE"
       ? { netWeightG: "", lossPct: "6", laborCost: "", materialCost: "", leadTimeDays: "", currency: "CNY", assumptions: "" }
+      : kind === "SHIPPING"
+        ? { trackingNumber: "" }
       : {});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -483,6 +584,8 @@ function UploadSheet({ order, kind, onClose, onDone }) {
     ? Number(data.candidateCount) > 0 && data.batchValidUntil && data.igiNumbers.trim() && data.availabilityConfirmed
     : kind === "ESTIMATE"
       ? Number(data.netWeightG) > 0 && data.laborCost !== "" && data.materialCost !== "" && Number(data.leadTimeDays) > 0 && data.assumptions.trim()
+      : kind === "SHIPPING"
+        ? data.trackingNumber.trim()
       : true;
   const setDataField = (key, value) => setData(current => ({ ...current, [key]: value }));
   const submit = async () => {
@@ -492,15 +595,14 @@ function UploadSheet({ order, kind, onClose, onDone }) {
       let media = files.map(file => ({ name: file.name, type: file.type, size: file.size, url: URL.createObjectURL(file) }));
       let update;
       if (!DEMO_MODE) {
-        const scope = kind === "QC" ? "qc" : kind === "CAD" ? "cad" : "proposal";
-        const uploaded = await Promise.all(files.map(file => uploadVendorMedia(file, scope)));
+        const uploaded = await Promise.all(files.map(file => uploadVendorMedia(file, order.code, kind)));
         media = uploaded.map((object, i) => ({ name: files[i].name, type: files[i].type, size: files[i].size, ...object }));
         update = (await vendorApi.addUpdate(order.code, { type: kind, note, media, data })).update;
       } else {
         const priorVersions = order.updates.filter(item => item.type === kind).map(item => item.version || 1);
         update = { id: `demo-${Date.now()}`, type: kind, note, media, data, version: Math.max(0, ...priorVersions) + 1, status: "submitted", createdAt: new Date().toISOString() };
       }
-      await onDone(t(`${files.length} 个文件已提交审核`), update);
+      await onDone(t(kind === "SHIPPING" ? "寄件信息已记录" : `${files.length} 个文件已提交审核`), update);
     } catch (e) {
       setError(t(e.code === "UPLOAD_FAILED" ? "文件上传失败，请重试" : "提交失败，请稍后重试"));
     } finally { setBusy(false); }
@@ -521,13 +623,19 @@ function UploadSheet({ order, kind, onClose, onDone }) {
         <div className="two-col"><label>{t("币种")}<select value={data.currency} onChange={e => setDataField("currency", e.target.value)}><option value="CNY">CNY</option><option value="USD">USD</option></select></label><label>{t("生产周期（天）")}<input type="number" min="1" value={data.leadTimeDays} onChange={e => setDataField("leadTimeDays", e.target.value)} /></label></div>
         <label>{t("估算假设")}<textarea value={data.assumptions} onChange={e => setDataField("assumptions", e.target.value)} placeholder={t("例如：US 6 戒围、1.5ct 主石尺寸、PT950…")} /></label>
       </div>}
-      <button className="upload-drop" onClick={() => inputRef.current?.click()}><span><UploadCloud size={25} /></span><strong>{t("从手机选择照片或视频")}</strong><small>{t("支持 JPG、PNG、WebP、MP4 · 视频最大 200MB")}</small></button>
-      <input ref={inputRef} hidden multiple accept="image/*,video/*" type="file" onChange={e => setFiles([...e.target.files])} />
+      {kind === "SHIPPING" && <div className="structured-form">
+        <label>{t("物流单号")}<input value={data.trackingNumber} onChange={e => setDataField("trackingNumber", e.target.value)} placeholder={t("请输入快递或物流单号")} autoComplete="off" /></label>
+      </div>}
+      <button className="upload-drop" onClick={() => inputRef.current?.click()}><span><UploadCloud size={25} /></span><strong>{t(files.length ? "继续添加照片或视频" : "选择多张照片或视频")}</strong><small>{t("可一次选择或分次添加多张 · 视频单个最大 200MB")}</small></button>
+      <input ref={inputRef} hidden multiple accept="image/*,video/*" type="file" onChange={e => {
+        setFiles(current => mergeSelectedFiles(current, [...e.target.files]));
+        e.target.value = "";
+      }} />
       {files.length > 0 && <div className="file-list">{files.map((file, index) => <div key={`${file.name}-${file.size}`}><FileText size={17} /><span><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(1)} MB</small></span><button aria-label={t("移除文件")} onClick={() => setFiles(current => current.filter((_, i) => i !== index))}><X size={15} /></button></div>)}</div>}
-      <label>{t("进度说明（选填）")}</label><textarea value={note} onChange={e => setNote(e.target.value)} placeholder={t("说明这次更新完成了什么、下一步是什么…")} />
+      <label>{t(kind === "SHIPPING" ? "寄件说明（选填）" : "进度说明（选填）")}</label><textarea value={note} onChange={e => setNote(e.target.value)} placeholder={t(kind === "SHIPPING" ? "例如：已使用顺丰寄出，包装完好…" : "说明这次更新完成了什么、下一步是什么…")} />
       <div className="privacy-tip"><ShieldCheck size={17} /><p><strong>{t("安全直传")}</strong> {t("文件从手机直接上传到腾讯云 COS，API 只保存对象标识。")}</p></div>
       {error && <p className="upload-error"><AlertCircle size={15} />{error}</p>}
-      <button className="sheet-submit" disabled={!files.length || !structuredValid || busy} onClick={submit}>{busy ? t("正在上传…") : `${t("提交订单团队审核")}${files.length ? ` · ${files.length}` : ""}`}</button>
+      <button className="sheet-submit" disabled={!files.length || !structuredValid || busy} onClick={submit}>{busy ? t("正在上传…") : `${t(kind === "SHIPPING" ? "确认包裹已寄出" : "提交订单团队审核")}${files.length ? ` · ${files.length}` : ""}`}</button>
     </div>
   </Sheet>;
 }
@@ -636,14 +744,61 @@ export default function App() {
   useEffect(() => {
     if (DEMO_MODE) return;
     let current = true;
-    vendorApi.me().then(async (me) => {
-      const [orderResult, inventoryResult] = await Promise.all([vendorApi.orders(), vendorApi.inventory()]);
-      if (!current) return;
-      setSupplier(me.supplier);
-      setOrders(orderResult.orders.map(apiOrderView));
-      setInventory(inventoryResult.inventory.map(apiInventoryView));
-    }).catch(() => { if (current) setSupplier(null); });
-    return () => { current = false; };
+    let loading = false;
+
+    const applyOrders = (rows) => {
+      const nextOrders = rows.map(apiOrderView);
+      setOrders(nextOrders);
+      // Keep an open order detail current too. The list endpoint intentionally
+      // omits version history, so preserve the detailed updates already loaded.
+      setSelected((open) => {
+        if (!open) return open;
+        const fresh = nextOrders.find((order) => order.code === open.code);
+        return fresh ? { ...open, ...fresh, updates: open.updates } : open;
+      });
+    };
+
+    const loadInitialWorkspace = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const me = await vendorApi.me();
+        const [orderResult, inventoryResult] = await Promise.all([vendorApi.orders(), vendorApi.inventory()]);
+        if (!current) return;
+        setSupplier(me.supplier);
+        applyOrders(orderResult.orders);
+        setInventory(inventoryResult.inventory.map(apiInventoryView));
+      } catch {
+        if (current) setSupplier(null);
+      } finally {
+        loading = false;
+      }
+    };
+
+    const refreshOrders = async () => {
+      if (loading || document.visibilityState !== "visible") return;
+      loading = true;
+      try {
+        const orderResult = await vendorApi.orders();
+        if (current) applyOrders(orderResult.orders);
+      } catch (error) {
+        if (current && (error?.status === 401 || error?.status === 403)) setSupplier(null);
+      } finally {
+        loading = false;
+      }
+    };
+
+    loadInitialWorkspace();
+    const refreshVisible = () => { if (document.visibilityState === "visible") refreshOrders(); };
+    const interval = window.setInterval(refreshOrders, 12000);
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => {
+      current = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshVisible);
+      document.removeEventListener("visibilitychange", refreshVisible);
+    };
   }, []);
 
   const showToast = (message) => { setToast(message); window.clearTimeout(showToast.t); showToast.t = window.setTimeout(() => setToast(""), 2600); };

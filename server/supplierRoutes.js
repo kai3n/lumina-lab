@@ -10,15 +10,18 @@ import {
   requireSupplier,
   setSessionCookie,
 } from "./middleware.js";
-import { createUploadUrl } from "./media.js";
 import { sendVendorInvite, sendVendorPasswordReset } from "./mailer.js";
+import { sendOrderEventMail } from "./orderMail.js";
+import { sendPushToStaff } from "./push.js";
 import {
   acceptSupplierInvite,
   addSupplierUpdate,
   assignSupplierOrder,
   completeSupplierJob,
+  completeSupplierMediaUpload,
   createSupplier,
   createSupplierInvite,
+  createSupplierMediaUpload,
   createSupplierPasswordReset,
   getSupplierById,
   getSupplierOrder,
@@ -35,8 +38,8 @@ import {
 } from "./supplierRepository.js";
 
 const MINUTE = 60 * 1000;
-const VENDOR_UPLOAD_SCOPES = new Set(["proposal", "cad", "qc"]);
 const VENDOR_VIDEO_MAX_BYTES = 200 * 1024 * 1024;
+const VENDOR_UPLOAD_TTL_SECONDS = 30 * 60;
 
 function vendorOrigin(req) {
   return process.env.VENDOR_ORIGIN || process.env.PUBLIC_ORIGIN || `${req.protocol}://${req.get("host")}`;
@@ -54,6 +57,13 @@ function vendorAuthUrl(req, parameter, token) {
   const url = vendorAppUrl(req);
   url.searchParams.set(parameter, token);
   return url.toString();
+}
+
+function notifyCustomer(notify) {
+  if (!notify?.email) return;
+  void sendOrderEventMail(notify).catch((error) => {
+    console.error("[supplier-order-event] email delivery failed", error);
+  });
 }
 
 export function supplierRouter() {
@@ -146,6 +156,11 @@ export function supplierRouter() {
       try {
         const update = await addSupplierUpdate(req.principal.supplierId, req.params.jobCode, req.body || {});
         res.status(201).json({ ok: true, update });
+        sendPushToStaff({
+          title: `Vendor submission · ${req.params.jobCode}`,
+          body: `${update.type}${update.note ? ` · ${update.note.slice(0, 100)}` : ""}`,
+          code: req.params.jobCode,
+        }).catch(() => {});
       } catch (e) { next(e); }
     });
 
@@ -159,27 +174,43 @@ export function supplierRouter() {
           req.params.jobCode,
           req.body?.type || req.body?.action,
         );
-        res.status(201).json({ ok: true, transition });
+        const { notify, ...publicTransition } = transition;
+        res.status(201).json({ ok: true, transition: publicTransition });
+        notifyCustomer(notify);
       } catch (e) { next(e); }
     });
 
-  r.post("/media/upload-url",
+  r.post("/orders/:jobCode/media/upload-url",
     rateLimit({ limit: 30, windowMs: MINUTE }),
     requireSupplier,
     async (req, res, next) => {
       try {
-        const { scope, contentType, size } = req.body || {};
-        if (!VENDOR_UPLOAD_SCOPES.has(scope) || typeof contentType !== "string") throw new ApiError("VALIDATION_ERROR", 400);
-        const signed = await createUploadUrl({
-          scope,
-          contentType,
-          size,
+        const signed = await createSupplierMediaUpload(
+          req.principal.supplierId,
+          req.params.jobCode,
+          req.body || {},
+          {
           origin: vendorOrigin(req),
-          keyPrefix: `vendor/${req.principal.supplierId}`,
           provider: process.env.VENDOR_MEDIA_PROVIDER || "cos",
           videoMaxBytes: VENDOR_VIDEO_MAX_BYTES,
-        });
+            expiresIn: VENDOR_UPLOAD_TTL_SECONDS,
+          },
+        );
         res.status(201).json({ ok: true, ...signed });
+      } catch (e) { next(e); }
+    });
+
+  r.post("/orders/:jobCode/media/:mediaCode/complete",
+    rateLimit({ limit: 60, windowMs: MINUTE }),
+    requireSupplier,
+    async (req, res, next) => {
+      try {
+        const media = await completeSupplierMediaUpload(
+          req.principal.supplierId,
+          req.params.jobCode,
+          req.params.mediaCode,
+        );
+        res.json({ ok: true, media });
       } catch (e) { next(e); }
     });
 
@@ -269,7 +300,9 @@ export function supplierAdminRouter() {
         req.body?.reviewNote,
         req.principal.id,
       );
-      res.json({ ok: true, update });
+      const { notify, ...publicUpdate } = update;
+      res.json({ ok: true, update: publicUpdate });
+      notifyCustomer(notify);
     } catch (e) { next(e); }
   });
 

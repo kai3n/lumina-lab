@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "api": "node server/index.js",
+    "api:local": "node --env-file-if-exists=.env.production.local --env-file-if-exists=.env.development.local scripts/start-local-api.mjs",
     "db:migrate": "node server/migrate.js",
     "build": "node scripts/build-production.mjs",
     "build:web": "vite build",

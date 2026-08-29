@@ -143,9 +143,8 @@ describe("어드민 실주문 콘솔", () => {
     });
     await request(app).post(`/v1/actions/${qc.body.actionCode}/respond`).set("Cookie", cust).send({ response: "CONFIRM" });
     await request(app).post(`/v1/admin/orders/${orderCode}/events`).set("Cookie", adm).send({ type: "balance_requested" });
-    await request(app).post(`/v1/orders/${orderCode}/payment-reported`).set("Cookie", cust).send({ kind: "balance" });
 
-    // 잔금 확인 — 남은 금액(1260) 자동 산출, 누적 2건
+    // 잔금 확인 — 고객 포털 보고 없이 Admin이 오프라인 입금을 기록한다.
     const bal = await request(app).post(`/v1/admin/orders/${orderCode}/events`).set("Cookie", adm).send({ type: "balance_confirmed" });
     expect(bal.status).toBe(201);
     const afterBal = await request(app).get(`/v1/orders/${orderCode}`).set("Cookie", cust);
@@ -160,7 +159,8 @@ describe("어드민 실주문 콘솔", () => {
     expect(afterRefire.body.order.summary.payments.find((p) => p.kind === "balance_confirmed").amountUsd).toBe(1260);
 
     await new Promise((r) => setTimeout(r, 50));
-    expect(drainMail().filter((m) => m.type === "order_deposit_confirmed" || m.type === "order_balance_confirmed").length).toBe(2);
+    const paymentMail = drainMail().filter((m) => m.type === "order_deposit_confirmed" || m.type === "order_balance_confirmed");
+    expect(paymentMail.map((m) => m.type)).toEqual(["order_deposit_confirmed"]);
   });
 
   it("불법 downstream 이벤트는 현재 열린 액션을 취소하지 않는다", async () => {

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { query, withTransaction } from "./db.js";
 import { ApiError } from "./errors.js";
+import { createReadUrl } from "./media.js";
+import { syncCustomerOrderToSupplierWorkflow } from "./supplierWorkflowContract.js";
 
 export { ApiError }; // adminRepository 등 기존 import 경로 호환
 
@@ -142,6 +144,18 @@ function artifactView(row) {
     media: row.media || [],
     payload: row.payload || {},
   };
+}
+
+async function readableArtifactView(row) {
+  const artifact = artifactView(row);
+  artifact.media = await Promise.all(artifact.media.map(async (item) => {
+    if (!item?.key) return item;
+    return {
+      ...item,
+      src: await createReadUrl({ key: item.key, provider: item.provider || "cos" }),
+    };
+  }));
+  return artifact;
 }
 
 function timelineView(row) {
@@ -500,7 +514,7 @@ export async function getCustomerOrder(orderCode, email) {
       ...orderSummaryView(order, actionView(nextAction)),
       defaultShippingAddress: customer.default_address || null,
       phases: phaseViews(order.stage),
-      publishedArtifacts: artifacts.rows.map(artifactView),
+      publishedArtifacts: await Promise.all(artifacts.rows.map(readableArtifactView)),
       timeline: timeline.rows.map(timelineView),
       // 응답 이력 요약 — 포털이 "승인됨 → 디파짓 단계" 같은 상태를 도출하는 데 쓴다 (created_at desc)
       actions: actions.rows.map((row) => ({
@@ -545,10 +559,6 @@ function normalizeShippingAddress(address) {
   }
   if (clean.phone.replace(/\D/g, "").length < 7) throw validationError("phone is invalid");
   return clean;
-}
-
-function hasCompleteShippingAddress(address) {
-  return isPlainObject(address) && REQUIRED_SHIPPING_FIELDS.every((key) => typeof address[key] === "string" && address[key].trim());
 }
 
 export async function updateOrderShippingAddress(orderCode, email, address = {}) {
@@ -713,9 +723,6 @@ export async function reportOrderPayment(orderCode, email, kind) {
       if (!quote || !(Number(quote.payload?.totalUsd) > 0) || actionResponse(quoteAction) !== "APPROVE") {
         throw stateConflict("an approved quote with a total is required", "ORDER_PREREQUISITE_MISSING");
       }
-      if (!hasCompleteShippingAddress(order.summary?.shippingAddress)) {
-        throw stateConflict("a complete shipping address is required before reporting the deposit", "ORDER_PREREQUISITE_MISSING");
-      }
     } else {
       const qcAction = await latestActionOfKind(client, order.id, "FINAL_QC_CONFIRMATION");
       if (actionResponse(qcAction) !== "CONFIRM" || !(await timelineEventExists(client, order.id, "balance_requested"))) {
@@ -805,9 +812,54 @@ export async function respondToAction(actionCode, email, payload = {}) {
       `,
       [action.id, payload],
     );
-    // 제안 승인 → stage QUOTE→DEPOSIT 전이(디파짓 대기), 다음 수는 고객. 그 외 응답은 BeloveD 차례.
+    const assignment = (await client.query(`
+      select * from supplier_order_assignments
+      where order_id=$1 and status='active'
+      order by assigned_at desc limit 1 for update
+    `, [action.order_id])).rows[0];
+
+    let supplierWorkflowState = null;
+    if (assignment) {
+      if (action.kind === "QUOTE_ACCEPTANCE" && response === "APPROVE"
+        && assignment.workflow_state === "QUOTE_CUSTOMER_REVIEW") {
+        supplierWorkflowState = "DEPOSIT_REQUIRED";
+      }
+      if (action.kind === "CAD_REVIEW" && assignment.workflow_state === "CUSTOMER_CAD_REVIEW") {
+        supplierWorkflowState = response === "APPROVE" ? "DESIGN_APPROVED" : "DESIGN_CHANGES";
+      }
+      if (action.kind === "FINAL_QC_CONFIRMATION" && assignment.workflow_state === "CUSTOMER_QC_REVIEW") {
+        supplierWorkflowState = response === "CONFIRM" ? "QC_APPROVED" : "QC_CHANGES";
+      }
+      if (supplierWorkflowState) {
+        await client.query(
+          "update supplier_order_assignments set workflow_state=$2 where id=$1",
+          [assignment.id, supplierWorkflowState],
+        );
+      }
+      if (response === "REQUEST_CHANGES" && new Set(["CAD_REVIEW", "FINAL_QC_CONFIRMATION"]).has(action.kind)) {
+        const updateType = action.kind === "CAD_REVIEW" ? "CAD" : "QC";
+        await client.query(`
+          update supplier_updates
+          set review_status='changes_requested', review_note=$4, reviewed_at=now()
+          where id=(
+            select id from supplier_updates
+            where supplier_id=$1 and order_id=$2 and update_type=$3
+            order by version desc, created_at desc limit 1
+          )
+        `, [assignment.supplier_id, action.order_id, updateType, payload.message.trim()]);
+      }
+    }
+    // Keep the customer-order projection compatible with the supplier state in
+    // the same transaction. Customer approval/change requests often hand the
+    // next action back to the vendor, not BeloveD.
     const quoteApproved = action.kind === "QUOTE_ACCEPTANCE" && response === "APPROVE";
-    if (quoteApproved) {
+    if (supplierWorkflowState) {
+      await syncCustomerOrderToSupplierWorkflow(client, action.order_id, supplierWorkflowState);
+      await client.query(
+        "update customer_orders set next_action_id=null, updated_at=now() where id=$1",
+        [action.order_id],
+      );
+    } else if (quoteApproved) {
       await client.query(
         `
           update customer_orders
@@ -833,7 +885,7 @@ export async function respondToAction(actionCode, email, payload = {}) {
       `,
       [await nextCode(client, "TL"), action.order_id, "Response received", action.title],
     );
-    return { actionId: actionCode, status: "RESPONDED" };
+    return { actionId: actionCode, status: "RESPONDED", supplierWorkflowState };
   });
 }
 
@@ -907,7 +959,7 @@ export const EVENT_TRANSITIONS = {
   cad_ready: { stage: "CAD", phase: "APPROVE_DESIGN", waitingOn: "CUSTOMER" },
   production_started: { stage: "PRODUCTION", phase: "MAKING", waitingOn: "BELOVEDIAMOND" },
   qc_ready: { stage: "FINAL_QC", phase: "MAKING", waitingOn: "CUSTOMER" },
-  balance_requested: { stage: "BALANCE", phase: "DELIVERY", waitingOn: "CUSTOMER" },
+  balance_requested: { stage: "BALANCE", phase: "DELIVERY", waitingOn: "BELOVEDIAMOND" },
   balance_confirmed: { stage: "BALANCE", phase: "DELIVERY", waitingOn: "BELOVEDIAMOND" },
   order_cancelled: { stage: "CANCELLED", phase: "CLOSED", waitingOn: "NONE" },
   shipped: { stage: "SHIPPING", phase: "DELIVERY", waitingOn: "EXTERNAL" },
@@ -986,7 +1038,7 @@ function validateOrderEventInput(type, data, extras) {
     artifact: extras.artifact === undefined ? null : normalizeArtifact(extras.artifact),
     action: extras.action === undefined ? null : normalizeAction(extras.action),
   };
-  const artifactEvents = new Set(["proposal_sent", "cad_ready", "qc_ready"]);
+  const artifactEvents = new Set(["proposal_sent", "cad_ready", "qc_ready", "shipped"]);
   const actionEvents = new Set(["proposal_sent", "cad_ready", "qc_ready"]);
   if (cleanExtras.artifact && !artifactEvents.has(type)) throw validationError(`${type} does not accept an artifact`);
   if (cleanExtras.action && !actionEvents.has(type)) throw validationError(`${type} does not accept an action`);
@@ -1018,7 +1070,13 @@ function validateOrderEventInput(type, data, extras) {
     if (cleanExtras.action?.kind !== "FINAL_QC_CONFIRMATION") throw validationError("qc_ready requires a FINAL_QC_CONFIRMATION action");
     requireActionResponses(cleanExtras.action, ["CONFIRM"], ["CONFIRM", "REQUEST_CHANGES"], "qc_ready");
   }
-  if (type === "shipped") cleanData.tracking = cleanRequiredText(cleanData.tracking, "data.tracking", 160);
+  if (type === "shipped") {
+    cleanData.tracking = cleanRequiredText(cleanData.tracking, "data.tracking", 160);
+    if (cleanExtras.artifact && cleanExtras.artifact.type !== "SHIPMENT") {
+      throw validationError("shipped only accepts a SHIPMENT artifact");
+    }
+    if (cleanExtras.artifact) cleanExtras.artifact.payload.tracking = cleanData.tracking;
+  }
   if ((type === "deposit_confirmed" || type === "balance_confirmed") && cleanData.amountUsd !== undefined) {
     cleanData.amountUsd = positiveMoney(cleanData.amountUsd, "data.amountUsd");
   }
@@ -1116,9 +1174,6 @@ export async function recordOrderEvent(orderCode, type, data = {}, extras = {}) 
       if (!(await timelineEventExists(client, order.id, "balance_requested"))) {
         throw stateConflict("the balance must be requested first", "ORDER_PREREQUISITE_MISSING");
       }
-      if (!(await timelineEventExists(client, order.id, "payment_reported", "balance"))) {
-        throw stateConflict("the customer must report the balance first", "PAYMENT_REPORT_REQUIRED");
-      }
     }
     let refundRecord = null;
     if (type === "order_cancelled") {
@@ -1148,9 +1203,6 @@ export async function recordOrderEvent(orderCode, type, data = {}, extras = {}) 
       if (!(await timelineEventExists(client, order.id, "balance_confirmed"))) {
         throw stateConflict("the balance must be confirmed first", "ORDER_PREREQUISITE_MISSING");
       }
-      if (!hasCompleteShippingAddress(order.summary?.shippingAddress)) {
-        throw stateConflict("a complete shipping address is required", "ORDER_PREREQUISITE_MISSING");
-      }
     }
     if (type === "delivered") {
       if (!(await timelineEventExists(client, order.id, "shipped")) || !String(order.summary?.tracking || "").trim()) {
@@ -1176,6 +1228,25 @@ export async function recordOrderEvent(orderCode, type, data = {}, extras = {}) 
        where id = $1`,
       [order.id, transition.stage, transition.phase, transition.waitingOn],
     );
+    const supplierEventTransition = {
+      proposal_sent: { from: "ESTIMATE_APPROVED", to: "QUOTE_CUSTOMER_REVIEW" },
+      deposit_confirmed: { from: "DEPOSIT_REQUIRED", to: "DESIGN_REQUIRED" },
+      production_started: { from: "DESIGN_APPROVED", to: "IN_PRODUCTION" },
+    }[type];
+    if (supplierEventTransition) {
+      const supplierAssignments = await client.query(`
+        update supplier_order_assignments set workflow_state=$3
+        where order_id=$1 and status='active' and workflow_state=$2
+        returning id, workflow_state
+      `, [order.id, supplierEventTransition.from, supplierEventTransition.to]);
+      if (supplierAssignments.rows[0]) {
+        await syncCustomerOrderToSupplierWorkflow(
+          client,
+          order.id,
+          supplierAssignments.rows[0].workflow_state,
+        );
+      }
+    }
     if (type === "order_cancelled") {
       await client.query(
         "update customer_actions set status = 'CANCELLED', updated_at = now() where order_id = $1 and status = 'OPEN'",

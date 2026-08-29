@@ -58,9 +58,9 @@ export function mediaRouter() {
       } catch (e) { next(e); }
     });
 
-  r.get("/local/:scope/:date/:file", async (req, res, next) => {
+  r.get("/local/*", async (req, res, next) => {
     try {
-      const key = `${req.params.scope}/${req.params.date}/${req.params.file}`;
+      const key = String(req.params[0] || "");
       const media = await getLocalMedia(key);
       if (!media) return next(new ApiError("NOT_FOUND", 404));
       res.set({
