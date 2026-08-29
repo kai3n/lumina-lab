@@ -14,6 +14,7 @@ const flush = () => new Promise((r) => setTimeout(r, 90));
 const hasCookie = (res, name) => (res.headers["set-cookie"] || []).some((c) => c.startsWith(`${name}=`));
 
 beforeEach(async () => {
+  delete process.env.CHAT_HUMAN_HANDOFF_ENABLED;
   __resetRateLimit();
   await truncateChat();
   await truncateAuth();
@@ -29,6 +30,15 @@ async function adminCookie() {
 }
 
 describe("라이브챗", () => {
+  it("공개 채팅 설정 — 상담원 연결은 기본 off, 이메일·Instagram 대체 경로 제공", async () => {
+    const config = await request(app).get("/v1/chat/config");
+    expect(config.status).toBe(200);
+    expect(config.body.humanHandoffEnabled).toBe(false);
+    expect(config.body.contact.email).toBe("support@belovediamond.com");
+    expect(config.body.contact.instagramHandle).toBe("@belovediamondjewelry");
+    expect(config.body.contact.instagramUrl).toBe("https://www.instagram.com/belovediamondjewelry/");
+  });
+
   it("익명 방문자 첫 메시지 — 스레드 생성 + httpOnly bd_chat 쿠키", async () => {
     const res = await request(app).post("/v1/chat/messages").send({ body: "Hi, do you have oval diamonds?" });
     expect(res.status).toBe(201);
@@ -281,13 +291,29 @@ describe("라이브챗", () => {
     expect(asA.body.thread?.code).toBe(codeA);
   });
 
-  it("명시적 '상담원 연결'은 자동응답이 있어도 스태프 알림 이메일이 나간다(스로틀 무시)", async () => {
+  it("상담원 연결 off — 직접 요청해도 연락처를 안내하고 스태프 강제 알림은 보내지 않는다", async () => {
     const first = await request(app).post("/v1/chat/messages").send({ body: "hello" });
     const cookie = first.headers["set-cookie"];
     await flush(); drainMail(); // 첫 알림 소진
     const talk = await request(app).post("/v1/chat/messages").set("Cookie", cookie)
       .send({ body: "I'd like to talk to a person." });
-    expect(talk.body.autoReply).toBeTruthy(); // consultation 자동응답
+    expect(talk.body.autoReply?.body).toContain("support@belovediamond.com");
+    expect(talk.body.autoReply?.body).toContain("@belovediamondjewelry");
+    await flush();
+    expect(drainMail().filter((m) => m.type === "chat_consultation")).toHaveLength(0);
+  });
+
+  it("상담원 연결 on — 기존 버튼 메시지는 스태프 알림을 즉시 보낸다", async () => {
+    process.env.CHAT_HUMAN_HANDOFF_ENABLED = "true";
+    const config = await request(app).get("/v1/chat/config");
+    expect(config.body.humanHandoffEnabled).toBe(true);
+
+    const first = await request(app).post("/v1/chat/messages").send({ body: "hello" });
+    const cookie = first.headers["set-cookie"];
+    await flush(); drainMail();
+    const talk = await request(app).post("/v1/chat/messages").set("Cookie", cookie)
+      .send({ body: "I'd like to talk to a person." });
+    expect(talk.body.autoReply?.body).toContain("real people");
     await flush();
     expect(drainMail().filter((m) => m.type === "chat_consultation").length).toBeGreaterThanOrEqual(1);
   });
