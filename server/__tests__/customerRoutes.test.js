@@ -93,7 +93,10 @@ describe("POST /v1/admin/orders/:orderCode/events", () => {
     drainMail(); // 접수 메일 비우기
     const agent = await adminAgent();
     const res = await agent.post(`/v1/admin/orders/${intake.body.orderCode}/events`)
-      .send({ type: "shipped", data: { tracking: "1Z999" } });
+      .send({
+        type: "shipped", data: { tracking: "1Z999" },
+        artifact: { type: "SHIPMENT", media: [{ kind: "image", src: "https://cdn.example/shipping-receipt.jpg" }] },
+      });
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("INVALID_ORDER_TRANSITION");
     expect(drainMail()).toHaveLength(0);

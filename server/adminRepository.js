@@ -1,5 +1,6 @@
 import { ApiError } from "./customerRepository.js";
 import { query, withTransaction } from "./db.js";
+import { supplierOperationalState } from "./supplierWorkflowContract.js";
 
 const CATEGORY_PREFIX = {
   ring: "RING",
@@ -74,6 +75,18 @@ function orderView(row) {
     },
     // 최신 제안 총액을 목록의 평면 필드로 노출 — 라이브 파이프라인/완료 매출 집계가 소비한다.
     totalUsd: row.total_usd === null || row.total_usd === undefined ? null : Number(row.total_usd),
+    supplierJob: row.supplier_job_code ? {
+      jobCode: row.supplier_job_code,
+      workflowState: row.supplier_workflow_state,
+      ...supplierOperationalState(row.supplier_workflow_state),
+      status: row.supplier_assignment_status,
+      dueAt: row.supplier_due_at,
+      supplierCode: row.supplier_code,
+      supplierName: row.supplier_name,
+      pendingReviewCount: Number(row.supplier_pending_review_count || 0),
+      lastSubmittedAt: row.supplier_last_submitted_at || null,
+      lastUpdateType: row.supplier_last_update_type || null,
+    } : null,
     updatedAt: row.updated_at,
     createdAt: row.created_at,
   };
@@ -164,7 +177,16 @@ export async function listAdminOrders() {
         i.required_date,
         i.reference_media,
         i.form_payload,
-        q.total_usd
+        q.total_usd,
+        a.supplier_job_code,
+        a.supplier_workflow_state,
+        a.supplier_assignment_status,
+        a.supplier_due_at,
+        a.supplier_code,
+        a.supplier_name,
+        a.supplier_pending_review_count,
+        a.supplier_last_submitted_at,
+        a.supplier_last_update_type
       from customer_orders o
       join customers c on c.id = o.customer_id
       join customer_intakes i on i.id = o.intake_id
@@ -178,6 +200,27 @@ export async function listAdminOrders() {
         order by pa.published_at desc, pa.id desc
         limit 1
       ) q on true
+      left join lateral (
+        select sa.job_code as supplier_job_code,
+               sa.workflow_state as supplier_workflow_state,
+               sa.status as supplier_assignment_status,
+               sa.due_at as supplier_due_at,
+               s.supplier_code,
+               s.display_name as supplier_name,
+               (select count(*)::int from supplier_updates su
+                where su.supplier_id=sa.supplier_id and su.order_id=sa.order_id
+                  and su.review_status='submitted') as supplier_pending_review_count,
+               (select max(su.created_at) from supplier_updates su
+                where su.supplier_id=sa.supplier_id and su.order_id=sa.order_id) as supplier_last_submitted_at,
+               (select su.update_type from supplier_updates su
+                where su.supplier_id=sa.supplier_id and su.order_id=sa.order_id
+                order by su.created_at desc limit 1) as supplier_last_update_type
+        from supplier_order_assignments sa
+        join suppliers s on s.id=sa.supplier_id
+        where sa.order_id=o.id and sa.status in ('active','completed')
+        order by case when sa.status='active' then 0 else 1 end, sa.assigned_at desc
+        limit 1
+      ) a on true
       order by o.updated_at desc
     `,
   );
@@ -202,7 +245,16 @@ export async function getAdminOrder(orderCode) {
         i.required_date,
         i.reference_media,
         i.form_payload,
-        q.total_usd
+        q.total_usd,
+        a.supplier_job_code,
+        a.supplier_workflow_state,
+        a.supplier_assignment_status,
+        a.supplier_due_at,
+        a.supplier_code,
+        a.supplier_name,
+        a.supplier_pending_review_count,
+        a.supplier_last_submitted_at,
+        a.supplier_last_update_type
       from customer_orders o
       join customers c on c.id = o.customer_id
       join customer_intakes i on i.id = o.intake_id
@@ -216,6 +268,27 @@ export async function getAdminOrder(orderCode) {
         order by pa.published_at desc, pa.id desc
         limit 1
       ) q on true
+      left join lateral (
+        select sa.job_code as supplier_job_code,
+               sa.workflow_state as supplier_workflow_state,
+               sa.status as supplier_assignment_status,
+               sa.due_at as supplier_due_at,
+               s.supplier_code,
+               s.display_name as supplier_name,
+               (select count(*)::int from supplier_updates su
+                where su.supplier_id=sa.supplier_id and su.order_id=sa.order_id
+                  and su.review_status='submitted') as supplier_pending_review_count,
+               (select max(su.created_at) from supplier_updates su
+                where su.supplier_id=sa.supplier_id and su.order_id=sa.order_id) as supplier_last_submitted_at,
+               (select su.update_type from supplier_updates su
+                where su.supplier_id=sa.supplier_id and su.order_id=sa.order_id
+                order by su.created_at desc limit 1) as supplier_last_update_type
+        from supplier_order_assignments sa
+        join suppliers s on s.id=sa.supplier_id
+        where sa.order_id=o.id and sa.status in ('active','completed')
+        order by case when sa.status='active' then 0 else 1 end, sa.assigned_at desc
+        limit 1
+      ) a on true
       where o.order_code = $1
     `,
     [orderCode],

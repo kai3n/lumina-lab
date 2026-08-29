@@ -6,6 +6,7 @@ import { requireAdmin, requireFullAdmin } from "./middleware.js";
 import { query } from "./db.js";
 import { listAdminOrders, getAdminOrder, listAdminStyles, upsertAdminStyle, deleteAdminStyle } from "./adminRepository.js";
 import { getSettingsValues, putSettingsValues, PUBLIC_SETTINGS_KEYS } from "./settingsRepository.js";
+import { getAdminSupplierOrderContext } from "./supplierRepository.js";
 
 const MINUTE = 60 * 1000;
 
@@ -88,10 +89,11 @@ export function adminOrderRouter() {
         const { rows: [{ id: orderId }] } = await query(
           "select id from customer_orders where order_code = $1", [req.params.orderCode],
         );
-        const [timeline, artifacts, actions] = await Promise.all([
+        const [timeline, artifacts, actions, supplierJob] = await Promise.all([
           query("select * from customer_timeline_events where order_id = $1 order by created_at desc", [orderId]),
           query("select * from published_artifacts where order_id = $1 order by published_at desc", [orderId]),
           query("select * from customer_actions where order_id = $1 order by created_at desc", [orderId]),
+          getAdminSupplierOrderContext(req.params.orderCode),
         ]);
         res.json({
           ok: true,
@@ -108,6 +110,7 @@ export function adminOrderRouter() {
             allowedResponses: row.allowed_responses || [], responsePayload: row.response_payload || null,
             respondedAt: row.responded_at, createdAt: row.created_at,
           })),
+          supplierJob,
         });
       } catch (e) { next(e); }
     });

@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { dirname, extname, join, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { lstat, mkdir, readdir, unlink, writeFile } from "node:fs/promises";
-import { GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { ApiError } from "./errors.js";
 
@@ -38,6 +38,13 @@ function localMediaRoot(env = process.env) {
 function positiveEnvNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function signedUrlTtl(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 60 && parsed <= 3600
+    ? Math.floor(parsed)
+    : SIGN_TTL_SECONDS;
 }
 
 function localMediaRetentionMs(env = process.env) {
@@ -129,7 +136,7 @@ function client(config) {
 }
 
 // scope: 업로드 용도별 키 프리픽스 (경로 추측 방지를 위해 랜덤 토큰 포함)
-const SCOPES = new Set(["reference", "review", "proposal", "cad", "qc", "style", "chat", "hero"]);
+const SCOPES = new Set(["reference", "review", "proposal", "cad", "qc", "shipment", "style", "chat", "hero"]);
 
 export function isPublicMediaKey(value) {
   const key = String(value || "");
@@ -323,19 +330,19 @@ function reservedLocalBytes() {
   return total;
 }
 
-async function createLocalUploadUrl({ scope, contentType, ext, bytes, origin }) {
+async function createLocalUploadUrl({ scope, contentType, ext, bytes, origin, keyPrefix, expiresIn }) {
   await initializeLocalMedia();
   await cleanupLocalMedia();
   if (storedLocalBytes + reservedLocalBytes() + bytes > localMediaMaxBytes()) {
     throw new ApiError("MEDIA_TOO_LARGE", 507, "local media capacity reached");
   }
   const token = randomBytes(32).toString("hex");
-  const key = `${scope}/${new Date().toISOString().slice(0, 10)}/${randomBytes(12).toString("hex")}.${ext}`;
+  const key = `${keyPrefix ? `${keyPrefix}/` : ""}${scope}/${new Date().toISOString().slice(0, 10)}/${randomBytes(12).toString("hex")}.${ext}`;
   pendingLocalUploads.set(token, {
     key,
     contentType,
     bytes,
-    expiresAt: Date.now() + SIGN_TTL_SECONDS * 1000,
+    expiresAt: Date.now() + expiresIn * 1000,
     status: "pending",
   });
   const base = safeOrigin(origin);
@@ -347,17 +354,18 @@ async function createLocalUploadUrl({ scope, contentType, ext, bytes, origin }) 
     publicUrl: scope === "chat" ? `/v1/media/local/${key}` : `${base}/v1/media/local/${key}`,
     key,
     provider: "local",
-    expiresIn: SIGN_TTL_SECONDS,
+    expiresIn,
   };
 }
 
-export async function createUploadUrl({ scope, contentType, size, origin, keyPrefix, provider, videoMaxBytes }) {
+export async function createUploadUrl({ scope, contentType, size, origin, keyPrefix, provider, videoMaxBytes, expiresIn }) {
   const validated = validateUploadInput({ scope, contentType, size, videoMaxBytes });
   const prefix = validatedKeyPrefix(keyPrefix);
+  const ttl = signedUrlTtl(expiresIn);
   const config = cloudConfig(process.env, provider);
   if (!config) {
     if (!localMediaEnabled()) throw new ApiError("MEDIA_NOT_CONFIGURED", 503);
-    return createLocalUploadUrl({ scope, origin, ...validated });
+    return createLocalUploadUrl({ scope, origin, keyPrefix: prefix, expiresIn: ttl, ...validated });
   }
   const { ext, bytes } = validated;
   const key = `${prefix ? `${prefix}/` : ""}${scope}/${new Date().toISOString().slice(0, 10)}/${randomBytes(12).toString("hex")}.${ext}`;
@@ -372,7 +380,7 @@ export async function createUploadUrl({ scope, contentType, size, origin, keyPre
     ContentLength: bytes,
   });
   const uploadUrl = await getSignedUrl(client(config), command, {
-    expiresIn: SIGN_TTL_SECONDS,
+    expiresIn: ttl,
     unhoistableHeaders: new Set(["content-length"]),
   });
   // Explicit provider/prefix uploads are private vendor objects represented by
@@ -384,7 +392,7 @@ export async function createUploadUrl({ scope, contentType, size, origin, keyPre
     : config.provider === "cos"
       ? publicMediaReadUrl(key, origin)
       : `${config.publicUrl.replace(/\/$/, "")}/${key}`;
-  return { uploadUrl, publicUrl, key, provider: config.provider, expiresIn: SIGN_TTL_SECONDS };
+  return { uploadUrl, publicUrl, key, provider: config.provider, expiresIn: ttl };
 }
 
 export async function createReadUrl({ key, provider, expiresIn = SIGN_TTL_SECONDS }) {
@@ -397,6 +405,34 @@ export async function createReadUrl({ key, provider, expiresIn = SIGN_TTL_SECOND
   if (!config) throw new ApiError("MEDIA_NOT_CONFIGURED", 503);
   const command = new GetObjectCommand({ Bucket: config.bucket, Key: normalizedKey });
   return getSignedUrl(client(config), command, { expiresIn });
+}
+
+export async function inspectStoredMedia({ key, provider }) {
+  const normalizedKey = String(key || "");
+  if (!/^[a-z0-9-]+(?:\/[a-z0-9-]+)*\/[a-f0-9]{24}\.[a-z0-9]+$/.test(normalizedKey)
+    || normalizedKey.length > 512) {
+    throw new ApiError("VALIDATION_ERROR", 400, "bad media key");
+  }
+  if (provider === "local") {
+    const media = await getLocalMedia(normalizedKey);
+    if (!media) throw new ApiError("MEDIA_UPLOAD_INCOMPLETE", 409);
+    return { byteSize: media.bytes, contentType: media.contentType, etag: null };
+  }
+  const config = cloudConfig(process.env, provider);
+  if (!config) throw new ApiError("MEDIA_NOT_CONFIGURED", 503);
+  try {
+    const head = await client(config).send(new HeadObjectCommand({ Bucket: config.bucket, Key: normalizedKey }));
+    return {
+      byteSize: Number(head.ContentLength),
+      contentType: String(head.ContentType || "").split(";", 1)[0].trim().toLowerCase(),
+      etag: head.ETag ? String(head.ETag).replace(/^"|"$/g, "") : null,
+    };
+  } catch (error) {
+    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NotFound" || error?.name === "NoSuchKey") {
+      throw new ApiError("MEDIA_UPLOAD_INCOMPLETE", 409);
+    }
+    throw error;
+  }
 }
 
 // non-production 전용 1회 PUT. 토큰에 서명된 타입/바이트 수와 정확히 일치한

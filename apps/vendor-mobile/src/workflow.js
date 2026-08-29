@@ -24,6 +24,11 @@ export const TASKS = {
     action: "上传终检证据",
     requirements: ["正面、侧面、背面照片或视频", "刻字、爪位、连接点等细节", "证书/腰码与实际重量凭证"],
   },
+  SHIPPING: {
+    label: "寄件与物流凭证",
+    action: "填写物流并确认寄出",
+    requirements: ["填写寄往 BeloveD 的物流单号", "上传至少一张寄件面单或收据照片", "确认包装完成后再提交"],
+  },
 };
 
 const STATES = {
@@ -45,15 +50,18 @@ const STATES = {
   CUSTOMER_CAD_REVIEW: { stageKey: "review", stage: "等待客户确认 CAD", progress: 57, waiting: "内部审核已通过，等待客户确认 CAD" },
   DESIGN_APPROVED: { stageKey: "review", stage: "CAD 已批准", progress: 61, waiting: "请确认最终 CAD 并开始制作", vendorAction: "CONFIRM_PRODUCTION", vendorLabel: "确认并开始制作" },
   IN_PRODUCTION: { stageKey: "production", stage: "制作中", progress: 68, waiting: "请上传本阶段制作进度", taskType: "PROGRESS" },
-  PROGRESS_REVIEW: { stageKey: "production", stage: "制作进度审核中", progress: 74, waiting: "制作进度已提交，等待 Operations 确认", reviewType: "PROGRESS" },
-  PROGRESS_CHANGES: { stageKey: "production", stage: "制作进度需补充", progress: 71, waiting: "请补充制作进度证据", taskType: "PROGRESS", changes: true },
+  PROGRESS_REVIEW: { stageKey: "review", stage: "进度审核中", progress: 72, waiting: "制作进度已提交，等待 Operations 审核", reviewType: "PROGRESS" },
+  PROGRESS_CHANGES: { stageKey: "production", stage: "进度需补充", progress: 70, waiting: "请根据审核意见补充制作进度", taskType: "PROGRESS", changes: true },
   QC_REQUIRED: { stageKey: "qc", stage: "待终检", progress: 80, waiting: "请上传成品终检证据", taskType: "QC" },
   QC_REVIEW: { stageKey: "qc", stage: "终检审核中", progress: 87, waiting: "终检资料已提交，等待 Operations 审核", reviewType: "QC" },
   QC_CHANGES: { stageKey: "qc", stage: "终检需修改", progress: 84, waiting: "请根据审核意见补充终检资料", taskType: "QC", changes: true },
-  QC_APPROVED: { stageKey: "qc", stage: "终检已通过", progress: 93, waiting: "请确认成品并准备交付", vendorAction: "CONFIRM_HANDOFF", vendorLabel: "确认并准备交付" },
-  HANDOFF_READY: { stageKey: "production", stage: "待平台收货", progress: 97, waiting: "已准备交付，等待 Operations 确认收货" },
+  CUSTOMER_QC_REVIEW: { stageKey: "qc", stage: "等待客户确认成品", progress: 91, waiting: "终检已通过并发送客户，等待客户确认" },
+  QC_APPROVED: { stageKey: "production", stage: "待寄出", progress: 93, waiting: "请填写物流单号并上传寄件凭证", taskType: "SHIPPING" },
+  HANDOFF_READY: { stageKey: "production", stage: "供应商已寄出", progress: 97, waiting: "包裹已寄出，等待 Operations 确认收货" },
   COMPLETED: { stageKey: "done", stage: "已完成", progress: 100, waiting: "订单履约已完成" },
 };
+
+export const WORKFLOW_STATES = Object.freeze(Object.keys(STATES));
 
 const TRANSITIONS = {
   CANDIDATES_REQUIRED: { SUBMIT_STONE: "CANDIDATES_REVIEW" },
@@ -72,13 +80,14 @@ const TRANSITIONS = {
   DESIGN_CHANGES: { SUBMIT_CAD: "DESIGN_REVIEW" },
   CUSTOMER_CAD_REVIEW: { APPROVE: "DESIGN_APPROVED", REQUEST_CHANGES: "DESIGN_CHANGES" },
   DESIGN_APPROVED: { CONFIRM_PRODUCTION: "IN_PRODUCTION" },
-  IN_PRODUCTION: { SUBMIT_PROGRESS: "PROGRESS_REVIEW" },
-  PROGRESS_REVIEW: { APPROVE: "QC_REQUIRED", REQUEST_CHANGES: "PROGRESS_CHANGES" },
+  IN_PRODUCTION: { SUBMIT_PROGRESS: "PROGRESS_REVIEW", OPEN_QC: "QC_REQUIRED" },
+  PROGRESS_REVIEW: { APPROVE: "IN_PRODUCTION", REQUEST_CHANGES: "PROGRESS_CHANGES" },
   PROGRESS_CHANGES: { SUBMIT_PROGRESS: "PROGRESS_REVIEW" },
   QC_REQUIRED: { SUBMIT_QC: "QC_REVIEW" },
-  QC_REVIEW: { APPROVE: "QC_APPROVED", REQUEST_CHANGES: "QC_CHANGES" },
+  QC_REVIEW: { APPROVE: "CUSTOMER_QC_REVIEW", REQUEST_CHANGES: "QC_CHANGES" },
   QC_CHANGES: { SUBMIT_QC: "QC_REVIEW" },
-  QC_APPROVED: { CONFIRM_HANDOFF: "HANDOFF_READY" },
+  CUSTOMER_QC_REVIEW: { CUSTOMER_CONFIRM_QC: "QC_APPROVED", REQUEST_CHANGES: "QC_CHANGES" },
+  QC_APPROVED: { SUBMIT_SHIPPING: "HANDOFF_READY" },
   HANDOFF_READY: { COMPLETE: "COMPLETED" },
 };
 
@@ -125,7 +134,7 @@ export function transitionWorkflow(state, event, { productLine = "solitaire" } =
 
 export function eventForUpdate(type) {
   const value = String(type || "").toUpperCase();
-  if (["STONE", "ESTIMATE", "CAD", "PROGRESS", "QC"].includes(value)) return `SUBMIT_${value}`;
+  if (["STONE", "ESTIMATE", "CAD", "PROGRESS", "QC", "SHIPPING"].includes(value)) return `SUBMIT_${value}`;
   return null;
 }
 
@@ -135,8 +144,8 @@ export function operationsActions(state) {
       CANDIDATES_REVIEW: "批准并发布候选",
       ESTIMATE_REVIEW: "确认供应报价",
       DESIGN_REVIEW: "内部通过并发送客户",
-      PROGRESS_REVIEW: "批准并进入终检",
-      QC_REVIEW: "批准终检",
+      PROGRESS_REVIEW: "确认制作进度",
+      QC_REVIEW: "批准终检并发送客户",
     };
     return [
       { event: "REQUEST_CHANGES", label: "退回修改", tone: "secondary" },
@@ -151,6 +160,11 @@ export function operationsActions(state) {
   if (state === "CUSTOMER_CAD_REVIEW") return [
     { event: "REQUEST_CHANGES", label: "客户要求修改", tone: "secondary" },
     { event: "APPROVE", label: "记录客户批准 CAD", tone: "primary" },
+  ];
+  if (state === "IN_PRODUCTION") return [{ event: "OPEN_QC", label: "制作完成，开放成品终检", tone: "primary" }];
+  if (state === "CUSTOMER_QC_REVIEW") return [
+    { event: "REQUEST_CHANGES", label: "客户要求修改", tone: "secondary" },
+    { event: "CUSTOMER_CONFIRM_QC", label: "记录客户确认成品", tone: "primary" },
   ];
   if (state === "HANDOFF_READY") return [{ event: "COMPLETE", label: "确认收货并完成", tone: "primary" }];
   return [];
@@ -172,6 +186,7 @@ const TIMELINE_INDEX = {
   IN_PRODUCTION: 12,
   PROGRESS_REVIEW: 13, PROGRESS_CHANGES: 13,
   QC_REQUIRED: 14, QC_REVIEW: 14, QC_CHANGES: 14,
+  CUSTOMER_QC_REVIEW: 14,
   QC_APPROVED: 15,
   HANDOFF_READY: 16,
   COMPLETED: 17,
@@ -193,7 +208,7 @@ const TIMELINE = [
   "开始制作",
   "提交制作进度",
   "成品终检",
-  "供货商确认交付",
+  "供货商已寄出包裹",
   "Operations 确认收货",
   "订单履约完成",
 ];
@@ -217,5 +232,5 @@ export const WORKFLOW_SEQUENCE = [
   "ASSIGNED", "CANDIDATES_REQUIRED", "CANDIDATES_REVIEW", "CUSTOMER_STONE_SELECTION", "DIAMOND_LOCKED",
   "ESTIMATE_REQUIRED", "ESTIMATE_REVIEW", "ESTIMATE_APPROVED", "QUOTE_CUSTOMER_REVIEW", "DEPOSIT_REQUIRED",
   "DESIGN_REQUIRED", "DESIGN_REVIEW", "CUSTOMER_CAD_REVIEW", "DESIGN_APPROVED", "IN_PRODUCTION",
-  "PROGRESS_REVIEW", "QC_REQUIRED", "QC_REVIEW", "QC_APPROVED", "HANDOFF_READY", "COMPLETED",
+  "QC_REQUIRED", "QC_REVIEW", "CUSTOMER_QC_REVIEW", "QC_APPROVED", "HANDOFF_READY", "COMPLETED",
 ];

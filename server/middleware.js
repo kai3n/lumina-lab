@@ -106,6 +106,14 @@ export function requireCustomer(req, _res, next) {
 }
 
 export function requireSupplier(req, _res, next) {
+  // Cookies are scoped by host, not port. During local E2E (and on a shared
+  // production host), one browser can send both the Admin and Vendor cookies.
+  // attachPrincipal keeps Admin as the generic default, so Vendor routes must
+  // explicitly select the independently validated supplier principal.
+  if (req.principalSupplier) {
+    req.principal = req.principalSupplier;
+    return next();
+  }
   if (req.principal?.type === "supplier") return next();
   next(new ApiError("SUPPLIER_AUTH_REQUIRED", 401));
 }

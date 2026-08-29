@@ -30,10 +30,10 @@ export async function apiFetch(path, { method = "GET", body, headers } = {}) {
 }
 
 // The server only signs the request; the phone uploads directly to object storage with PUT.
-export async function uploadVendorMedia(file, scope = "qc") {
-  const signed = await apiFetch("/vendor/media/upload-url", {
+export async function uploadVendorMedia(file, jobCode, purpose) {
+  const signed = await apiFetch(`/vendor/orders/${encodeURIComponent(jobCode)}/media/upload-url`, {
     method: "POST",
-    body: { scope, contentType: file.type, size: file.size },
+    body: { purpose, fileName: file.name, contentType: file.type, size: file.size },
   });
   const uploaded = await fetch(signed.uploadUrl, {
     method: "PUT",
@@ -41,11 +41,11 @@ export async function uploadVendorMedia(file, scope = "qc") {
     body: file,
   });
   if (!uploaded.ok) throw new ApiError("UPLOAD_FAILED", uploaded.status);
-  return {
-    key: signed.key,
-    provider: signed.provider || "cos",
-    ...(signed.provider === "local" ? { url: signed.publicUrl } : {}),
-  };
+  const completed = await apiFetch(
+    `/vendor/orders/${encodeURIComponent(jobCode)}/media/${encodeURIComponent(signed.mediaId)}/complete`,
+    { method: "POST" },
+  );
+  return completed.media;
 }
 
 export const vendorApi = {

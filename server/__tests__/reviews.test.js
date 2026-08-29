@@ -62,7 +62,9 @@ async function deliveredOrder(_admin, email, tracking = "1Z 999-123") {
   await recordOrderEvent(orderCode, "balance_requested");
   await reportOrderPayment(orderCode, email, "balance");
   await recordOrderEvent(orderCode, "balance_confirmed");
-  await recordOrderEvent(orderCode, "shipped", { tracking });
+  await recordOrderEvent(orderCode, "shipped", { tracking }, {
+    artifact: { type: "SHIPMENT", media: [{ kind: "image", src: "https://cdn.example.com/shipping-receipt.jpg" }] },
+  });
   await recordOrderEvent(orderCode, "delivered");
   return orderCode;
 }
