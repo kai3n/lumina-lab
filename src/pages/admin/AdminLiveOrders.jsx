@@ -51,7 +51,7 @@ const COPY = {
     steps: {
       proposal_sent: "Send the proposal", deposit_confirmed: "Deposit received",
       diamond_locked: "Diamond secured", production_started: "Production started",
-      qc_ready: "Send finished-piece QC", balance_requested: "Balance request recorded",
+      qc_ready: "Send finished-piece QC", balance_requested: "Request the balance",
       balance_confirmed: "Balance received",
       shipped: "Shipped", delivered: "Delivered",
     },
@@ -88,7 +88,7 @@ const COPY = {
     steps: {
       proposal_sent: "제안 발송", deposit_confirmed: "디파짓 수령",
       diamond_locked: "다이아 확보", production_started: "제작 시작",
-      qc_ready: "완성품 QC 발송", balance_requested: "잔금 요청 기록",
+      qc_ready: "완성품 QC 발송", balance_requested: "잔금 요청",
       balance_confirmed: "잔금 수령",
       shipped: "발송됨", delivered: "수령 완료",
     },
@@ -125,7 +125,7 @@ const COPY = {
     steps: {
       proposal_sent: "发送方案", deposit_confirmed: "已收定金",
       diamond_locked: "钻石已锁定", production_started: "开始制作",
-      qc_ready: "发送成品质检", balance_requested: "已记录催收尾款",
+      qc_ready: "发送成品质检", balance_requested: "请求尾款",
       balance_confirmed: "尾款已到账",
       shipped: "已发货", delivered: "已送达",
     },
@@ -162,7 +162,7 @@ const COPY = {
     steps: {
       proposal_sent: "Enviar la propuesta", deposit_confirmed: "Depósito recibido",
       diamond_locked: "Diamante asegurado", production_started: "Producción iniciada",
-      qc_ready: "Enviar QC de la pieza", balance_requested: "Solicitud de saldo registrada",
+      qc_ready: "Enviar QC de la pieza", balance_requested: "Solicitar el saldo",
       balance_confirmed: "Saldo recibido",
       shipped: "Enviado", delivered: "Entregado",
     },
@@ -231,9 +231,6 @@ const SUPPLIER_COPY = {
 const SUPPLIER_JOB_ACTIONS = {
   CUSTOMER_STONE_SELECTION: ["LOCK_DIAMOND"],
   DIAMOND_LOCKED: ["OPEN_ESTIMATE"],
-  ESTIMATE_APPROVED: ["PREPARE_QUOTE"],
-  QUOTE_CUSTOMER_REVIEW: ["CUSTOMER_ACCEPT_QUOTE"],
-  DEPOSIT_REQUIRED: ["CONFIRM_DEPOSIT"],
   CUSTOMER_CAD_REVIEW: ["APPROVE", "REQUEST_CHANGES"],
   IN_PRODUCTION: ["OPEN_QC"],
   CUSTOMER_QC_REVIEW: ["CONFIRM_QC", "REQUEST_QC_CHANGES"],
@@ -253,6 +250,8 @@ const FLOW_GUARD_COPY = {
     waitDepositReport: "Waiting for the customer to report the deposit transfer.",
     waitVendorStart: "Waiting for the supplier to confirm production start.",
     waitQcApproval: "Waiting for the customer to confirm the finished piece.",
+    waitBalanceReport: "Waiting for the customer to report the balance transfer.",
+    addressRequired: "A complete saved shipping address is required before shipping.",
     addressMissingWarning: "No complete address is saved here. Confirm the delivery address through your offline channel before dispatching.",
     totalRequired: "Enter a proposal total greater than $0.",
     depositInvalid: "Deposit must be greater than $0 and no more than the proposal total.",
@@ -273,8 +272,8 @@ const FLOW_GUARD_COPY = {
     cta: {
       proposal_sent: "Send proposal to customer", deposit_confirmed: "Confirm deposit received",
       diamond_locked: "Confirm diamond secured", production_started: "Start production",
-      qc_ready: "Send finished-piece QC", balance_requested: "Record balance requested",
-      balance_confirmed: "Record balance received", shipped: "Confirm shipment and email tracking",
+      qc_ready: "Send finished-piece QC", balance_requested: "Request balance payment",
+      balance_confirmed: "Confirm balance received", shipped: "Confirm shipment and email tracking",
       delivered: "Mark order delivered",
     },
   },
@@ -284,6 +283,8 @@ const FLOW_GUARD_COPY = {
     waitDepositReport: "고객의 디파짓 송금 보고를 기다리고 있습니다.",
     waitVendorStart: "공급업체의 제작 시작 확인을 기다리고 있습니다.",
     waitQcApproval: "고객의 완성품 컨펌을 기다리고 있습니다.",
+    waitBalanceReport: "고객의 잔금 송금 보고를 기다리고 있습니다.",
+    addressRequired: "발송 전에 저장된 전체 배송지가 필요합니다.",
     addressMissingWarning: "저장된 전체 주소가 없습니다. 발송 전에 오프라인 채널로 배송지를 확인하세요.",
     totalRequired: "$0보다 큰 제안 총액을 입력해 주세요.",
     depositInvalid: "디파짓은 $0보다 크고 제안 총액 이하여야 합니다.",
@@ -304,14 +305,15 @@ const FLOW_GUARD_COPY = {
     cta: {
       proposal_sent: "고객에게 제안 발송", deposit_confirmed: "디파짓 수령 확정",
       diamond_locked: "다이아 확보 확정", production_started: "제작 시작",
-      qc_ready: "완성품 QC 발송", balance_requested: "잔금 요청 기록",
-      balance_confirmed: "잔금 수령 기록", shipped: "발송 확정 및 운송장 안내",
+      qc_ready: "완성품 QC 발송", balance_requested: "잔금 결제 요청",
+      balance_confirmed: "잔금 수령 확정", shipped: "발송 확정 및 운송장 안내",
       delivered: "배송 완료 처리",
     },
   },
   zh: {
     blockedPrevious: "请先完成上一步。", waitQuoteApproval: "正在等待客户批准最新方案。",
     waitDepositReport: "正在等待客户报告定金转账。", waitVendorStart: "正在等待供应商确认开工。", waitQcApproval: "正在等待客户确认成品。",
+    waitBalanceReport: "正在等待客户报告尾款转账。", addressRequired: "发货前需要完整且已保存的收货地址。",
     addressMissingWarning: "系统内没有完整收货地址；寄出前请通过线下渠道确认地址。此提醒不会阻止发货。",
     totalRequired: "请输入大于 $0 的方案总价。", depositInvalid: "定金必须大于 $0 且不超过方案总价。",
     estLabel: "自动预估", estApply: "应用预估", estDiamond: "钻石", estMetal: "金属", estLabor: "工费",
@@ -328,13 +330,14 @@ const FLOW_GUARD_COPY = {
     progressStages: { quote: "报价", design: "定金与设计", making: "制作与质检", balance: "尾款", delivery: "交付" },
     cta: {
       proposal_sent: "向客户发送方案", deposit_confirmed: "确认已收定金", diamond_locked: "确认钻石已锁定",
-      production_started: "开始制作", qc_ready: "发送成品质检", balance_requested: "记录已向客户催尾款",
-      balance_confirmed: "记录尾款已到账", shipped: "确认发货并发送运单", delivered: "标记为已送达",
+      production_started: "开始制作", qc_ready: "发送成品质检", balance_requested: "请求支付尾款",
+      balance_confirmed: "确认已收尾款", shipped: "确认发货并发送运单", delivered: "标记为已送达",
     },
   },
   es: {
     blockedPrevious: "Completa primero el paso anterior.", waitQuoteApproval: "Esperando la aprobación de la última propuesta.",
     waitDepositReport: "Esperando que el cliente reporte el depósito.", waitVendorStart: "Esperando que el proveedor confirme el inicio de producción.", waitQcApproval: "Esperando que el cliente confirme la pieza terminada.",
+    waitBalanceReport: "Esperando que el cliente reporte el saldo.", addressRequired: "Se requiere una dirección completa y guardada antes del envío.",
     addressMissingWarning: "No hay una dirección completa guardada. Confírmala por el canal offline antes de enviar.",
     totalRequired: "Introduce un total de propuesta mayor que $0.", depositInvalid: "El depósito debe ser mayor que $0 y no superar el total.",
     estLabel: "Estimación automática", estApply: "Usar estimación", estDiamond: "diamante", estMetal: "metal", estLabor: "mano de obra",
@@ -352,8 +355,8 @@ const FLOW_GUARD_COPY = {
     cta: {
       proposal_sent: "Enviar propuesta al cliente", deposit_confirmed: "Confirmar depósito recibido",
       diamond_locked: "Confirmar diamante asegurado", production_started: "Iniciar producción",
-      qc_ready: "Enviar control de pieza terminada", balance_requested: "Registrar solicitud de saldo",
-      balance_confirmed: "Registrar saldo recibido", shipped: "Confirmar envío y enviar guía", delivered: "Marcar como entregado",
+      qc_ready: "Enviar control de pieza terminada", balance_requested: "Solicitar pago del saldo",
+      balance_confirmed: "Confirmar saldo recibido", shipped: "Confirmar envío y enviar guía", delivered: "Marcar como entregado",
     },
   },
 };
@@ -365,8 +368,8 @@ const FLOW = [
   { type: "diamond_locked", num: "2-1", reaches: "CAD", fields: ["igi"] },
   { type: "production_started", num: "2-2", reaches: "PRODUCTION" },
   { type: "qc_ready", num: "2-3", reaches: "FINAL_QC", media: "qc", artifactType: "QC", fields: ["note"], action: { kind: "FINAL_QC_CONFIRMATION", allowedResponses: ["CONFIRM", "REQUEST_CHANGES"] } },
-  { type: "balance_requested", num: "3-1", reaches: "BALANCE", internalOnly: true },
-  { type: "balance_confirmed", num: "3-2", reaches: "BALANCE", internalOnly: true },
+  { type: "balance_requested", num: "3-1", reaches: "BALANCE" },
+  { type: "balance_confirmed", num: "3-2", reaches: "BALANCE" },
   { type: "shipped", num: "3-3", reaches: "SHIPPING", fields: ["tracking"], media: "shipment", artifactType: "SHIPMENT" },
   { type: "delivered", num: "3-4", reaches: "DELIVERED" },
 ];
@@ -451,6 +454,12 @@ export function adminStepGuard({ step, index, order, timeline, actions, changeRe
   }
   if (step.type === "balance_requested" && latestActionResponse(actions, "FINAL_QC_CONFIRMATION") !== "CONFIRM") {
     return { available: false, reason: t.waitQcApproval };
+  }
+  if (step.type === "balance_confirmed" && !hasPaymentReport(timeline, "balance")) {
+    return { available: false, reason: t.waitBalanceReport };
+  }
+  if (step.type === "shipped" && !isShippingAddressComplete(order.summary?.shippingAddress)) {
+    return { available: false, reason: t.addressRequired };
   }
   return { available: true, reason: "" };
 }
@@ -904,7 +913,7 @@ function StepCard({ step, index, order, done, changeRequest, expanded, onToggle,
           )}
           {step.type === "shipped" && !isShippingAddressComplete(order.summary?.shippingAddress) && (
             <div className="feedback-note" style={{ borderLeft: "2px solid var(--accent)", paddingLeft: 12 }} role="status">
-              <strong>{t.addressMissingWarning}</strong>
+              <strong>{t.addressRequired}</strong>
             </div>
           )}
           {step.media && (

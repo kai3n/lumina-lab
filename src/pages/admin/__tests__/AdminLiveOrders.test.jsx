@@ -8,6 +8,7 @@ const t = {
   waitDepositReport: "deposit",
   waitVendorStart: "vendor-start",
   waitQcApproval: "qc",
+  waitBalanceReport: "balance",
   addressRequired: "address",
 };
 
@@ -68,14 +69,24 @@ describe("adminStepGuard", () => {
     })).toEqual({ available: true, reason: "" });
   });
 
-  it("lets operations record the received balance without a customer portal report", () => {
+  it("requires the customer to report the balance before operations confirms receipt", () => {
     const timeline = ["proposal_sent", "deposit_confirmed", "diamond_locked", "production_started", "qc_ready", "balance_requested"].map(event);
-    expect(guard({ type: "balance_confirmed" }, 6, { timeline })).toEqual({ available: true, reason: "" });
+    expect(guard({ type: "balance_confirmed" }, 6, { timeline })).toEqual({ available: false, reason: "balance" });
+    expect(guard({ type: "balance_confirmed" }, 6, {
+      timeline: [...timeline, event("payment_reported", { kind: "balance" })],
+    })).toEqual({ available: true, reason: "" });
   });
 
-  it("does not block an offline-coordinated shipment when no address is stored", () => {
+  it("requires a complete saved address before shipment", () => {
     const timeline = ["proposal_sent", "deposit_confirmed", "diamond_locked", "production_started", "qc_ready", "balance_requested", "balance_confirmed"].map(event);
-    expect(guard({ type: "shipped" }, 7, { timeline })).toEqual({ available: true, reason: "" });
+    expect(guard({ type: "shipped" }, 7, { timeline })).toEqual({ available: false, reason: "address" });
+    expect(guard({ type: "shipped" }, 7, {
+      timeline,
+      order: { summary: { shippingAddress: {
+        recipientName: "Jane", phone: "555-0100", addressLine1: "1 Main St",
+        city: "Los Angeles", region: "CA", postalCode: "90001", country: "US",
+      } } },
+    })).toEqual({ available: true, reason: "" });
   });
 });
 
