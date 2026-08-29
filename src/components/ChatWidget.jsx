@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Check, HelpCircle, Home, ImagePlus, Mail, MessageCircle, Send, UserRound, Video, X } from "lucide-react";
+import { Check, HelpCircle, Home, ImagePlus, Instagram, Mail, MessageCircle, Send, UserRound, Video, X } from "lucide-react";
 import { useLocale } from "../i18n.jsx";
-import { bookConsultation, fetchConsultationSlots, fetchThread, saveChatEmail, sendChatMessage, submitCsat, uploadChatImage, chatMediaFiles, CHAT_MAX_BYTES, CHAT_VIDEO_MAX_BYTES } from "../lib/chat.js";
+import { bookConsultation, fetchChatConfig, fetchConsultationSlots, fetchThread, saveChatEmail, sendChatMessage, submitCsat, uploadChatImage, chatMediaFiles, CHAT_MAX_BYTES, CHAT_VIDEO_MAX_BYTES } from "../lib/chat.js";
 import { faqChips } from "../lib/chatFaq.js";
 import ChatThumb from "./ChatThumb.jsx";
 import "../chat.css";
@@ -10,6 +10,14 @@ import "../chat.css";
 // 위젯을 숨길 경로 — 어드민 콘솔·스태프 게이트(같은 Layout 안에서 렌더되므로 여기서 차단)
 const BLOCKED = (path) => path.startsWith("/bo-") || path.startsWith("/gate-") || path.startsWith("/admin");
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DEFAULT_CHAT_CONFIG = {
+  humanHandoffEnabled: false,
+  contact: {
+    email: "support@belovediamond.com",
+    instagramHandle: "@belovediamondjewelry",
+    instagramUrl: "https://www.instagram.com/belovediamondjewelry/",
+  },
+};
 
 const COPY = {
   en: {
@@ -27,6 +35,7 @@ const COPY = {
     bookTaken: "That time was just taken — please pick another.", bookTzPrefix: "Your timezone:",
     joined: "A BeloveD specialist has joined the conversation",
     escalateLead: "Sorry I couldn't quite help — would you like to talk to a person?",
+    contactLead: "Need personal help? Reach us directly:", contactEmail: "Email", contactInstagram: "Instagram",
     nudgeMsg: "Questions? I'm here to help — ask me anything.",
     csatLead: "How was this conversation?", csatThanks: "Thanks for your feedback!",
     quickTitle: "Or jump to",
@@ -52,6 +61,7 @@ const COPY = {
     bookTaken: "방금 예약된 시간이에요 — 다른 시간을 골라주세요.", bookTzPrefix: "내 시간대:",
     joined: "BeloveD 상담원이 대화에 참여했어요",
     escalateLead: "제가 잘 못 도와드린 것 같아요 — 상담원과 연결해 드릴까요?",
+    contactLead: "직접 도움이 필요하신가요? 아래로 연락해 주세요:", contactEmail: "이메일", contactInstagram: "Instagram",
     nudgeMsg: "궁금한 점 있으세요? 편하게 물어보세요 :)",
     csatLead: "이 대화, 어떠셨나요?", csatThanks: "평가 감사합니다!",
     quickTitle: "바로가기",
@@ -77,6 +87,7 @@ const COPY = {
     bookTaken: "该时段刚被预约——请另选一个。", bookTzPrefix: "您的时区：",
     joined: "BeloveD 顾问已加入对话",
     escalateLead: "抱歉没能帮到您——需要联系人工吗？",
+    contactLead: "需要人工帮助？请通过以下方式联系我们：", contactEmail: "邮箱", contactInstagram: "Instagram",
     nudgeMsg: "有疑问吗？随时问我 :)",
     csatLead: "这次对话怎么样？", csatThanks: "感谢您的反馈！",
     quickTitle: "快捷前往",
@@ -102,6 +113,7 @@ const COPY = {
     bookTaken: "Ese horario se acaba de reservar — elige otro.", bookTzPrefix: "Tu zona horaria:",
     joined: "Un especialista de BeloveD se unió a la conversación",
     escalateLead: "Perdón si no pude ayudarte — ¿quieres hablar con una persona?",
+    contactLead: "¿Necesitas ayuda personal? Contáctanos directamente:", contactEmail: "Email", contactInstagram: "Instagram",
     nudgeMsg: "¿Preguntas? Estoy aquí para ayudarte.",
     csatLead: "¿Qué tal esta conversación?", csatThanks: "¡Gracias por tu opinión!",
     quickTitle: "O ve a",
@@ -127,6 +139,22 @@ function hhmm(iso) {
 function Avatar({ agent, className = "" }) {
   if (agent?.avatar) return <img className={`chat-avatar ${className}`} src={agent.avatar} alt={agent.name} />;
   return <div className={`chat-avatar ${className}`} aria-hidden="true">{initials(agent?.name)}</div>;
+}
+
+function ContactLinks({ t, contact, compact = false }) {
+  return (
+    <div className={compact ? "chat-contact chat-contact--compact" : "chat-contact"}>
+      {!compact && <div className="chat-contact-lead">{t.contactLead}</div>}
+      <a href={`mailto:${contact.email}`}>
+        <Mail size={compact ? 13 : 15} strokeWidth={1.9} />
+        <span>{compact ? t.contactEmail : contact.email}</span>
+      </a>
+      <a href={contact.instagramUrl} target="_blank" rel="noopener noreferrer">
+        <Instagram size={compact ? 13 : 15} strokeWidth={1.9} />
+        <span>{compact ? t.contactInstagram : contact.instagramHandle}</span>
+      </a>
+    </div>
+  );
 }
 
 // 첨부 렌더 — 이미지·영상 공용. thumb=작은 미리보기(합성 대기), 아니면 대화 본문.
@@ -179,6 +207,10 @@ export default function ChatWidget() {
   const [escalate, setEscalate] = useState(false); // 자동응답 연속 실패 → 상담원 연결 제안
   const [nudge, setNudge] = useState(false); // 선제 인사
   const [rated, setRated] = useState(false); // CSAT 평가 완료
+  const [chatConfig, setChatConfig] = useState(DEFAULT_CHAT_CONFIG);
+
+  const humanHandoffEnabled = chatConfig.humanHandoffEnabled === true;
+  const contact = { ...DEFAULT_CHAT_CONFIG.contact, ...(chatConfig.contact || {}) };
 
   const lastIdRef = useRef(0);
   const bodyRef = useRef(null);
@@ -224,6 +256,21 @@ export default function ChatWidget() {
   }
 
   // 폴링: 열림=3s(읽음처리), 닫힘=15s(peek, 미확인 뱃지만)
+  useEffect(() => {
+    if (hidden) return undefined;
+    let alive = true;
+    fetchChatConfig()
+      .then((data) => {
+        if (!alive) return;
+        setChatConfig({
+          humanHandoffEnabled: data?.humanHandoffEnabled === true,
+          contact: { ...DEFAULT_CHAT_CONFIG.contact, ...(data?.contact || {}) },
+        });
+      })
+      .catch(() => { /* fail closed: keep handoff off and show fallback contacts */ });
+    return () => { alive = false; };
+  }, [hidden]);
+
   useEffect(() => {
     if (hidden) return undefined;
     let alive = true;
@@ -353,7 +400,7 @@ export default function ChatWidget() {
         messages: [data.message, ...(data.autoReply ? [data.autoReply] : [])],
       });
       // 3-스트라이크: 자동응답이 못 맞추면 미스 누적 → 2회면 상담원 연결 제안
-      if (data.autoReply) { missRef.current = 0; setEscalate(false); }
+      if (data.autoReply || !humanHandoffEnabled) { missRef.current = 0; setEscalate(false); }
       else { missRef.current += 1; if (missRef.current >= 2) setEscalate(true); }
     } catch { setError("Could not send — please try again."); }
     finally { setSending(false); }
@@ -545,9 +592,11 @@ export default function ChatWidget() {
               <button type="button" className="chat-quick-btn chat-book" onClick={() => setConsultOpen(true)}>
                 <Video size={15} strokeWidth={1.9} /> {t.book}
               </button>
-              <button type="button" className="chat-quick-btn chat-talk" onClick={() => doSend(t.talkMsg)}>
-                <UserRound size={15} strokeWidth={1.9} /> {t.talk}
-              </button>
+              {humanHandoffEnabled ? (
+                <button type="button" className="chat-quick-btn chat-talk" onClick={() => doSend(t.talkMsg)}>
+                  <UserRound size={15} strokeWidth={1.9} /> {t.talk}
+                </button>
+              ) : <ContactLinks t={t} contact={contact} />}
             </div>
           ) : (
             <>
@@ -561,7 +610,7 @@ export default function ChatWidget() {
                   </div>
                 </Fragment>
               ))}
-              {escalate && (
+              {humanHandoffEnabled && escalate && (
                 <div className="chat-escalate">
                   <span>{t.escalateLead}</span>
                   <button type="button" onClick={() => { setEscalate(false); doSend(t.talkMsg); }}>{t.talk}</button>
@@ -592,7 +641,9 @@ export default function ChatWidget() {
           <div className="chat-actionbar">
             <button type="button" onClick={() => setMenuOpen(true)}><HelpCircle size={14} strokeWidth={1.9} /> {t.menu}</button>
             {/* 에스컬레이션 카드가 이미 '상담원 연결'을 노출 중이면 중복 버튼 숨김 */}
-            {!escalate && <button type="button" onClick={() => doSend(t.talkMsg)}><UserRound size={14} strokeWidth={1.9} /> {t.talk}</button>}
+            {humanHandoffEnabled
+              ? (!escalate && <button type="button" onClick={() => doSend(t.talkMsg)}><UserRound size={14} strokeWidth={1.9} /> {t.talk}</button>)
+              : <ContactLinks t={t} contact={contact} compact />}
           </div>
         )}
 

@@ -28,6 +28,14 @@ describe("chatFaq 지식베이스", () => {
     expect(matchFaq(null, "en")).toBeNull();
   });
 
+  it("상담원 연결 off면 이메일·Instagram 직접 연락처를 반환한다", () => {
+    const result = matchFaq("Can I talk to a person?", "en", { humanHandoffEnabled: false });
+    expect(result.id).toBe("consultation");
+    expect(result.answer).toContain("support@belovediamond.com");
+    expect(result.answer).toContain("@belovediamondjewelry");
+    expect(result.answer).toContain("instagram.com/belovediamondjewelry");
+  });
+
   it("모든 엔트리는 4개 언어 질문·답변을 갖춘다", () => {
     for (const e of FAQ) {
       for (const loc of ["en", "ko", "zh", "es"]) {

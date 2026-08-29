@@ -2,6 +2,12 @@
 // 위젯은 조용히 접힌 상태를 유지한다.
 import { apiFetch } from "./api.js";
 
+// Public, server-owned chat capabilities. The client defaults human handoff to
+// off, so a config/network failure can never accidentally expose the feature.
+export async function fetchChatConfig() {
+  return apiFetch("/chat/config");
+}
+
 export async function sendChatMessage({ body, attachments, locale, email } = {}) {
   return apiFetch("/chat/messages", { method: "POST", body: { body, attachments, locale, email } });
 }

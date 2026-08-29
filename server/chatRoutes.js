@@ -17,6 +17,15 @@ import {
 
 const MINUTE = 60 * 1000;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const SUPPORT_EMAIL = "support@belovediamond.com";
+const INSTAGRAM_HANDLE = "@belovediamondjewelry";
+const INSTAGRAM_URL = "https://www.instagram.com/belovediamondjewelry/";
+
+// Server-owned feature flag. It is deliberately fail-closed/default-off.
+// Set CHAT_HUMAN_HANDOFF_ENABLED=true to restore the live handoff UI/behavior.
+export function humanHandoffEnabled(env = process.env) {
+  return /^(1|true|yes|on)$/i.test(String(env.CHAT_HUMAN_HANDOFF_ENABLED || ""));
+}
 
 // 위젯 헤더에 보여줄 응대 스태프 페르소나 (v1은 단일 공유 페르소나)
 export const STAFF_AGENT = {
@@ -63,6 +72,20 @@ async function resolveOrCreateThread(req, res, locale) {
 export function chatRouter() {
   const r = Router();
 
+  // Public capability/config endpoint used by the widget. Keeping the flag on
+  // the server prevents client and API behavior from drifting apart.
+  r.get("/config", (_req, res) => {
+    res.json({
+      ok: true,
+      humanHandoffEnabled: humanHandoffEnabled(),
+      contact: {
+        email: SUPPORT_EMAIL,
+        instagramHandle: INSTAGRAM_HANDLE,
+        instagramUrl: INSTAGRAM_URL,
+      },
+    });
+  });
+
   // 방문자/고객 메시지 전송
   r.post("/messages",
     rateLimit({ limit: 20, windowMs: MINUTE, keyFn: (req) => `chat-send:${req.cookies?.bd_chat || req.ip}` }),
@@ -76,12 +99,15 @@ export function chatRouter() {
 
         // FAQ 자동응답 — 기본 질문이면 컨시어지(자동)가 즉시 답변한다. 없으면 사람이 응대.
         let autoReply = null;
-        const faq = matchFaq(body, thread.visitor_locale || locale || "en");
+        const handoffEnabled = humanHandoffEnabled();
+        const faq = matchFaq(body, thread.visitor_locale || locale || "en", {
+          humanHandoffEnabled: handoffEnabled,
+        });
         if (faq) autoReply = await appendMessage(thread.id, { sender: "staff", body: faq.answer });
 
         // 스태프 데스크톱 알림(웹푸시) — 자동응답이 못 한(사람 필요)·미디어 포함, 또는
         // 명시적 '상담원 연결' 요청(consultation 매칭)이면 자동응답이 있어도 즉시 알린다.
-        const wantsHuman = faq?.id === "consultation";
+        const wantsHuman = handoffEnabled && faq?.id === "consultation";
         const hasMediaPush = Array.isArray(attachments) && attachments.length > 0;
         if (!faq || wantsHuman || hasMediaPush) {
           sendPushToStaff({

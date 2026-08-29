@@ -276,6 +276,13 @@ export const FAQ = [
 
 const norm = (s) => String(s || "").toLowerCase().trim();
 
+const HANDOFF_DISABLED_ANSWER = {
+  en: "Live handoff is not available in chat right now. Email support@belovediamond.com (reply within 1 business day), or message us on Instagram at @belovediamondjewelry: https://www.instagram.com/belovediamondjewelry/",
+  ko: "현재 채팅에서는 상담원 연결을 지원하지 않아요. support@belovediamond.com으로 이메일을 보내시거나(영업일 기준 1일 이내 답변), Instagram @belovediamondjewelry로 메시지를 보내 주세요: https://www.instagram.com/belovediamondjewelry/",
+  zh: "目前聊天中暂不提供人工转接。请发送邮件至 support@belovediamond.com（1 个工作日内回复），或通过 Instagram @belovediamondjewelry 联系我们：https://www.instagram.com/belovediamondjewelry/",
+  es: "La transferencia a una persona no está disponible en el chat por ahora. Escríbenos a support@belovediamond.com (respuesta en 1 día hábil) o por Instagram en @belovediamondjewelry: https://www.instagram.com/belovediamondjewelry/",
+};
+
 // 키워드 매칭 — 라틴 문자로 시작하는 키워드는 '단어 시작' 경계에서만 매칭한다.
 // 짧은 키워드의 중간-단어 부분일치 오탐을 막는다: origin→igi, display→pay, Georgia→gia,
 // flibbertigibbet→igi 등. 스템 접두(payment←pay, engraving←engrav)는 그대로 매칭.
@@ -289,12 +296,15 @@ function keywordHit(t, k) {
 }
 
 // 방문자 메시지를 지식베이스와 매칭 — 첫 일치 항목의 답변을 반환(없으면 null → 사람이 응대)
-export function matchFaq(text, locale = "en") {
+export function matchFaq(text, locale = "en", { humanHandoffEnabled = true } = {}) {
   const t = norm(text);
   if (!t) return null;
   for (const entry of FAQ) {
     if (entry.keywords.some((k) => keywordHit(t, k))) {
-      return { id: entry.id, answer: entry.a[locale] || entry.a.en };
+      const answer = entry.id === "consultation" && !humanHandoffEnabled
+        ? (HANDOFF_DISABLED_ANSWER[locale] || HANDOFF_DISABLED_ANSWER.en)
+        : (entry.a[locale] || entry.a.en);
+      return { id: entry.id, answer };
     }
   }
   return null;
